@@ -5,7 +5,7 @@
 ```bash
 go mod init && go mod tidy && go build
 ```
-## Grab the git submodule
+## Grab git submodule
 git clone https://git.suckless.org/st
 
 ### Refs
