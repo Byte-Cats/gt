@@ -5,7 +5,7 @@
 ```bash
 go mod init && go mod tidy && go build
 ```
-## Grab git submodule
+## Grab dep
 ```bash
 git submodule add https://git.suckless.org/st
 ```
