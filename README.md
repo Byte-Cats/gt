@@ -7,7 +7,7 @@ go mod init && go mod tidy && go build
 ```
 ## fetch dep
 ```bash
-git submodule add https://git.suckless.org/st
+git submodule add 
 ```
 
 ### Refs
