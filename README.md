@@ -1,6 +1,6 @@
 # gt
 Go Terminal 
-## Minimalist Terminal emulator built in Go
+## Minimalist Terminal emulator written in Go
 
 ### Features
 
@@ -14,7 +14,7 @@ go mod init && go mod tidy && go build
 ```
 
 
-### Refs
+### Reaserch References
 
 [C in go slideshow](http://akrennmair.github.io/golang-cgo-slides/#3)
 
