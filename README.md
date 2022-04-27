@@ -1,14 +1,18 @@
 # gt
+Go Terminal 
+## Minimalist Terminal emulator built in Go
 
+### Features
 
+- Image Preview (PNG, JPEG, GIF, BMP, TIFF, WebP)
+- Supports 256 colors
+- Scrollable Text Buffer
+- UTF-8 support
 
 ```bash
 go mod init && go mod tidy && go build
 ```
-## fetch dep
-```bash
-git submodule add 
-```
+
 
 ### Refs
 
