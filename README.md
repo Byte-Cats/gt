@@ -1,6 +1,6 @@
 # gt
 Go Terminal 
-## Minimalist Terminal emulator built in Go
+## Minimalist Terminal emulator written in Go
 
 ### Features
 
