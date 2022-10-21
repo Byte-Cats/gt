@@ -1,6 +1,10 @@
+<div align="center";>
+
 # gt
 Go Terminal 
 ## Minimalist Terminal emulator written in Go
+
+</div>
 
 ### Features
 
