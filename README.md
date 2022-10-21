@@ -6,17 +6,19 @@ Go Terminal
 
 </div>
 
-### Features
+
+### Desired Feature Set
 
 - Image Preview (PNG, JPEG, GIF, BMP, TIFF, WebP)
 - Supports 256 colors
 - Scrollable Text Buffer
 - UTF-8 support
 
+
+### Build from source
 ```bash
 go mod init && go mod tidy && go build
 ```
-
 
 ### Reaserch References
 
