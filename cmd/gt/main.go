@@ -102,15 +102,32 @@ func runApp() error {
 		return fmt.Errorf("failed to get font glyph size: %w", err)
 	}
 
-	// Initial window size based on cols/rows (or defaults)
-	// TODO: Allow configuration of initial cols/rows
-	initialCols := 80
-	initialRows := 24
-	windowWidth := glyphWidth * initialCols
-	windowHeight := glyphHeight * initialRows
+	// Define maximum initial window size in pixels
+	const maxInitialWidthPx = 1280
+	const maxInitialHeightPx = 800
+
+	// Initial desired size based on cols/rows (or defaults)
+	desiredInitialCols := 80
+	desiredInitialRows := 24
+	calculatedWidth := glyphWidth * desiredInitialCols
+	calculatedHeight := glyphHeight * desiredInitialRows // Padding will be added by renderer logic
+
+	// Clamp calculated size to maximums
+	initialWindowWidth := calculatedWidth
+	if initialWindowWidth > maxInitialWidthPx {
+		initialWindowWidth = maxInitialWidthPx
+	}
+	initialWindowHeight := calculatedHeight
+	if initialWindowHeight > maxInitialHeightPx {
+		initialWindowHeight = maxInitialHeightPx
+	}
+
+	log.Printf("Requesting Initial Window Size (capped at %dx%d): %dx%d",
+		maxInitialWidthPx, maxInitialHeightPx, initialWindowWidth, initialWindowHeight)
 
 	window, err := sdl.CreateWindow("gt Terminal", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED,
-		int32(windowWidth), int32(windowHeight), sdl.WINDOW_SHOWN|sdl.WINDOW_RESIZABLE)
+		int32(initialWindowWidth), int32(initialWindowHeight),
+		sdl.WINDOW_SHOWN|sdl.WINDOW_RESIZABLE|sdl.WINDOW_ALLOW_HIGHDPI)
 	if err != nil {
 		return fmt.Errorf("failed to create window: %w", err)
 	}
@@ -124,6 +141,32 @@ func runApp() error {
 		return fmt.Errorf("failed to create renderer: %w", err)
 	}
 	defer rendererSDL.Destroy()
+
+	// Get the actual drawable size in pixels (important for HighDPI)
+	drawableW, drawableH, err := rendererSDL.GetOutputSize()
+	if err != nil {
+		// Fallback or error handling if we can't get the size
+		log.Printf("Warning: Could not get renderer output size: %v. Using window size.", err)
+		// Use the capped window size as a fallback for drawable size
+		drawableW = int32(initialWindowWidth)
+		drawableH = int32(initialWindowHeight)
+	}
+	log.Printf("Initial Drawable Size: %dx%d pixels", drawableW, drawableH)
+
+	// Calculate initial rows/cols based on *actual drawable* size and glyph *pixel* size
+	if glyphWidth <= 0 || glyphHeight <= 0 {
+		return fmt.Errorf("invalid glyph dimensions: %dx%d", glyphWidth, glyphHeight)
+	}
+	initialCols := int(drawableW) / glyphWidth
+	// Adjust height calculation to account for top padding
+	initialRows := (int(drawableH) - topPadding) / glyphHeight
+	if initialCols <= 0 {
+		initialCols = 80
+	} // Fallback if calculation yields zero/negative
+	if initialRows <= 0 {
+		initialRows = 24
+	} // Fallback if calculation yields zero/negative
+	log.Printf("Calculated Initial Grid based on Drawable Size: %d cols, %d rows", initialCols, initialRows)
 
 	// --- PTY Setup ---
 	shell := os.Getenv("SHELL")
@@ -198,11 +241,23 @@ func runApp() error {
 					running = false
 				case *sdl.WindowEvent:
 					if ev.Event == sdl.WINDOWEVENT_RESIZED {
-						newWidth := int(ev.Data1)
-						newHeight := int(ev.Data2)
-						newCols := newWidth / glyphWidth
-						newRows := newHeight / glyphHeight
+						// Ignore event data (ev.Data1, ev.Data2) as it might be in points.
+						// Get the new drawable size directly from the renderer.
+						newDrawableW, newDrawableH, err := rendererSDL.GetOutputSize()
+						if err != nil {
+							log.Printf("Error getting new renderer size on resize: %v", err)
+							continue // Skip resize if we can't get the size
+						}
+
+						log.Printf("Window Resized Event. New Drawable Size: %dx%d", newDrawableW, newDrawableH)
+
+						// Recalculate cols/rows based on new *drawable* size and glyph *pixel* size
+						newCols := int(newDrawableW) / glyphWidth
+						// Adjust height for padding
+						newRows := (int(newDrawableH) - topPadding) / glyphHeight
+
 						if newCols > 0 && newRows > 0 {
+							log.Printf("Recalculated Grid Size: %d cols, %d rows", newCols, newRows)
 							winSize := &pty.Winsize{Rows: uint16(newRows), Cols: uint16(newCols)}
 							if err := pty.Setsize(ptmx, winSize); err != nil {
 								log.Printf("error resizing pty: %s", err)

@@ -3,7 +3,7 @@
 
 # font_path = "/System/Library/Fonts/Menlo.ttc" # Keep Menlo for now
 font_path = "/Users/fource/Library/Fonts/SpaceMono-Regular.ttf" # Use SpaceMono from user library
-font_size = 15 # Use previous size for SpaceMono
+font_size = 28 # Increase font size
 
 [colors]
 foreground = "#f0e6d8" # Light Sand/Off-white
