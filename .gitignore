@@ -5,14 +5,32 @@
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Output of go build
+gt
+
+# Test binary, build with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of coverage testing: cover.out
 *.out
 
-# Dependency directories (remove the comment below to include it)
+# Dependency directories (remove the comment below if you do use vendor)
 # vendor/
+
+# IDE/Editor directories
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # If you prefer the allow list template instead of the deny list, see community template:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
@@ -20,4 +38,13 @@
 # Go workspace file
 go.work
 
-.idea/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+
+# bin
+bin/
