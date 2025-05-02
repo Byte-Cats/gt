@@ -1,7 +1,9 @@
 package render
 
 import (
+	"fmt"
 	"gt/buffer"
+	"image"
 	"log"
 
 	"github.com/veandco/go-sdl2/sdl"
@@ -90,15 +92,20 @@ type glyphCacheKey struct {
 	// For now, assume Bg is handled by background rect fill.
 }
 
+// imageKey uniquely identifies an image placeholder
+type imageKey struct {
+	r, c int
+}
+
 // SDLRenderer handles drawing the terminal buffer state using SDL.
 type SDLRenderer struct {
-	sdlRenderer *sdl.Renderer
-	font        *ttf.Font
-	boldFont    *ttf.Font // Add bold font variant
-	glyphWidth  int
-	glyphHeight int
-
-	glyphCache map[glyphCacheKey]*sdl.Texture // Cache for rendered glyphs
+	sdlRenderer       *sdl.Renderer
+	font              *ttf.Font
+	boldFont          *ttf.Font
+	glyphWidth        int
+	glyphHeight       int
+	glyphCache        map[glyphCacheKey]*sdl.Texture
+	imageTextureCache map[imageKey]*sdl.Texture // Cache for image textures
 }
 
 // NewSDLRenderer creates a new renderer that draws to the given SDL renderer using the specified font.
@@ -114,12 +121,13 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font) *SDLRender
 	height = font.Height() // This is often the most reliable
 
 	return &SDLRenderer{
-		sdlRenderer: renderer,
-		font:        font,
-		boldFont:    boldFont, // Store bold font
-		glyphWidth:  width,
-		glyphHeight: height,
-		glyphCache:  make(map[glyphCacheKey]*sdl.Texture), // Initialize the cache
+		sdlRenderer:       renderer,
+		font:              font,
+		boldFont:          boldFont,
+		glyphWidth:        width,
+		glyphHeight:       height,
+		glyphCache:        make(map[glyphCacheKey]*sdl.Texture),
+		imageTextureCache: make(map[imageKey]*sdl.Texture), // Init image cache
 	}
 }
 
@@ -128,13 +136,15 @@ func (r *SDLRenderer) Destroy() {
 	for _, texture := range r.glyphCache {
 		texture.Destroy()
 	}
-	// Clear the map? Not strictly necessary if renderer is discarded.
+	for _, texture := range r.imageTextureCache {
+		texture.Destroy()
+	}
 	r.glyphCache = nil
+	r.imageTextureCache = nil
 }
 
 // Draw renders the current state of the buffer to the SDL renderer.
 func (r *SDLRenderer) Draw(buf *buffer.Output) error {
-	// Use GetVisibleGrid which accounts for scrollback offset
 	grid := buf.GetVisibleGrid()
 	rows := len(grid)
 	cols := 0
@@ -142,13 +152,84 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		cols = len(grid[0])
 	}
 
+	// Keep track of areas covered by images in the current row
+	imageSkipUntil := make(map[int]int) // map[row] => skip rendering text cells until col X
+
 	for y := 0; y < rows; y++ {
+		skipUntilCol, rowHasSkip := imageSkipUntil[y]
 		for x := 0; x < cols; x++ {
+			// If we are within a skipped area from a previous image, continue
+			if rowHasSkip && x < skipUntilCol {
+				continue
+			}
+
 			cell := grid[y][x]
 
-			// Skip rendering continuation cells of wide characters
+			// Skip rendering standard continuation cells of wide characters
 			if cell.Width == 0 {
 				continue
+			}
+
+			// --- Check for and Render Image Placeholder ---
+			if cell.IsImagePlaceholder {
+				imgKey := imageKey{r: y, c: x} // Key based on visible grid coords
+				img := buf.GetImage(imgKey)    // Need buffer.GetImage(key) method
+				if img != nil {
+					imgTexture, cached := r.imageTextureCache[imgKey]
+					var imgW, imgH int32
+
+					if !cached {
+						// Create texture from image.Image
+						surface, err := imageToSurface(img) // Need imageToSurface helper
+						if err != nil {
+							log.Printf("Failed to convert image to surface: %v", err)
+						} else {
+							imgTexture, err = r.sdlRenderer.CreateTextureFromSurface(surface)
+							surface.Free()
+							if err != nil {
+								log.Printf("Failed to create texture from image surface: %v", err)
+								imgTexture = nil // Ensure it's nil on error
+							} else {
+								r.imageTextureCache[imgKey] = imgTexture // Cache it
+							}
+						}
+					}
+
+					if imgTexture != nil {
+						// Get image texture dimensions
+						_, _, imgW, imgH, _ = imgTexture.Query()
+
+						// Calculate destination rectangle (simple placement for now)
+						imgDstRect := sdl.Rect{
+							X: int32(x * r.glyphWidth),
+							Y: int32(y * r.glyphHeight),
+							W: imgW, // Use actual image width for now
+							H: imgH, // Use actual image height for now
+						}
+						// TODO: Add scaling based on protocol hints (width=, height=) or cell count
+
+						r.sdlRenderer.Copy(imgTexture, nil, &imgDstRect)
+
+						// Mark cells covered by this image to be skipped
+						colsToSkip := (imgW + int32(r.glyphWidth) - 1) / int32(r.glyphWidth) // Round up
+						rowsToSkip := (imgH + int32(r.glyphHeight) - 1) / int32(r.glyphHeight)
+						for rowOffset := 0; rowOffset < int(rowsToSkip); rowOffset++ {
+							currentSkipRow := y + rowOffset
+							skipEndCol := x + int(colsToSkip)
+							if existingSkip, ok := imageSkipUntil[currentSkipRow]; ok {
+								if skipEndCol > existingSkip { // Extend skip if this image goes further
+									imageSkipUntil[currentSkipRow] = skipEndCol
+								}
+							} else {
+								imageSkipUntil[currentSkipRow] = skipEndCol
+							}
+						}
+						// Restart inner loop to respect the new skip calculation immediately
+						skipUntilCol = imageSkipUntil[y]
+						rowHasSkip = true
+						continue // Skip the rest of this iteration (x loop)
+					}
+				}
 			}
 
 			// --- Determine Colors & Draw Background ---
@@ -255,6 +336,48 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	}
 
 	return nil
+}
+
+// imageToSurface converts image.Image to *sdl.Surface (needs careful pixel format handling)
+// This is a simplified version assuming RGBA source.
+func imageToSurface(img image.Image) (*sdl.Surface, error) {
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+
+	// Create an SDL surface (try ARGB8888 which is common)
+	surface, err := sdl.CreateRGBSurfaceWithFormat(0, int32(width), int32(height), 32, sdl.PIXELFORMAT_ARGB8888)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create surface: %w", err)
+	}
+
+	surface.Lock()
+	pixels := surface.Pixels()
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			r, g, b, a := img.At(x+bounds.Min.X, y+bounds.Min.Y).RGBA()
+			// RGBA() returns 16-bit values, convert to 8-bit
+			r8 := uint8(r >> 8)
+			g8 := uint8(g >> 8)
+			b8 := uint8(b >> 8)
+			a8 := uint8(a >> 8)
+
+			// Calculate index in the byte slice (assuming ARGB8888)
+			// SDL pixel order might vary by endianness! This assumes little-endian like x86.
+			// ARGB = [B G R A] in memory on little-endian? Check SDL docs!
+			// Let's assume standard RGBA packing for simplicity first, might need adjustment.
+			offset := (y*int(surface.Pitch) + x*4) // 4 bytes per pixel
+			if offset+3 < len(pixels) {
+				// Assuming ARGB8888 on little-endian = BGRA byte order? Let's try typical RGBA order. Need confirmation.
+				pixels[offset+0] = r8 // R
+				pixels[offset+1] = g8 // G
+				pixels[offset+2] = b8 // B
+				pixels[offset+3] = a8 // A
+			}
+		}
+	}
+	surface.Unlock()
+
+	return surface, nil
 }
 
 // mapBufferColorToSDL converts buffer color codes/indices to SDL colors based on type.
