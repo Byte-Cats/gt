@@ -75,39 +75,39 @@ const defaultColorType = ColorTypeStandard
 
 const defaultMaxScrollback = 1000 // Default number of lines to keep in scrollback
 
-// imageKey identifies an image's top-left position in the grid
-type imageKey struct {
-	r int
-	c int
+// ImageKey identifies an image's top-left position in the grid (Exported)
+type ImageKey struct {
+	R int
+	C int
 }
 
 // Cell represents a single character cell on the terminal screen
 type Cell struct {
-	Char          rune
-	Width         int
+	Char               rune
+	Width              int
 	IsImagePlaceholder bool // Does this cell mark the start of an image?
-	Fg            int
-	Bg            int
-	FgColorType   string
-	BgColorType   string
-	Bold          bool
-	Underline     bool
-	Reverse       bool
+	Fg                 int
+	Bg                 int
+	FgColorType        string
+	BgColorType        string
+	Bold               bool
+	Underline          bool
+	Reverse            bool
 }
 
 // newDefaultCell creates a cell with default attributes.
 func newDefaultCell() Cell {
 	return Cell{
-		Char:          ' ',
-		Width:         1,
+		Char:               ' ',
+		Width:              1,
 		IsImagePlaceholder: false, // Default to false
-		Fg:            defaultFgColor,
-		Bg:            defaultBgColor,
-		FgColorType:   defaultColorType,
-		BgColorType:   defaultColorType,
-		Bold:          false,
-		Underline:     false,
-		Reverse:       false,
+		Fg:                 defaultFgColor,
+		Bg:                 defaultBgColor,
+		FgColorType:        defaultColorType,
+		BgColorType:        defaultColorType,
+		Bold:               false,
+		Underline:          false,
+		Reverse:            false,
 	}
 }
 
@@ -126,13 +126,14 @@ type Output struct {
 	scrollbackHead  int      // Index in scrollback slice where the NEXT scrolled line will go
 	viewOffset      int      // How many lines the view is scrolled back (0 = live view)
 
-	// Internal state for parsing escape sequences
-	parserState   string // e.g., "GROUND", "ESC", "CSI"
-	params        []int  // Parameters for CSI sequence
-	currentParam  string // Current parameter being built
-	privateMarker rune   // Private marker like ?, >, etc.
+	// Parser State
+	parserState   string
+	params        []int
+	currentParam  string
+	privateMarker rune
+	oscBuffer     bytes.Buffer // Buffer for accumulating OSC string
 
-	// Current graphic rendition attributes
+	// Current Attributes
 	currentFg          int
 	currentBg          int
 	currentFgColorType string
@@ -143,7 +144,7 @@ type Output struct {
 	// TODO: Add other current attributes
 
 	// Stored Images
-	images map[imageKey]image.Image // Store decoded images by position
+	images map[ImageKey]image.Image // Use exported type for key
 
 	// TODO: Add scrollback buffer
 	// TODO: Add SGR state (current colors, bold, etc.)
@@ -151,7 +152,7 @@ type Output struct {
 
 const esc = '\x1b'
 const bel = '\a' // Bell, often used as OSC terminator
-const st = '\\' // String Terminator alternative for OSC (ESC \)
+const st = '\\'  // String Terminator rune (backslash)
 
 const stateGround = "GROUND"
 const stateEsc = "ESC"
@@ -190,7 +191,7 @@ func NewOutputBuffer(rows, cols int) *Output {
 		currentBold:        false,
 		currentUnderline:   false,
 		currentReverse:     false,
-		images:             make(map[imageKey]image.Image), // Initialize image map
+		images:             make(map[ImageKey]image.Image), // Initialize image map
 	}
 }
 
@@ -349,19 +350,18 @@ func (o *Output) enterState(newState string) {
 // handleEsc processes a byte following an ESC character.
 func (o *Output) handleEsc(b byte) {
 	switch b {
-	case '[': // Control Sequence Introducer (CSI)
+	case '[': // CSI
 		o.enterState(stateCsi)
 	case ']': // OSC
 		o.enterState(stateOsc)
-	case '\': // ST for OSC - sometimes ESC terminates OSC
-		if o.parserState == stateOsc { // Check needed? Should be handled by main write loop
+	case byte(st): // Use the rune constant `st` for the case comparison
+		if o.parserState == stateOsc {
 			o.handleOscTerminator(b)
 		} else {
 			o.enterState(stateGround)
 		}
-	// TODO: Handle other ESC sequences (e.g., OSC, non-CSI controls)
+	// TODO: Handle other ESC sequences
 	default:
-		// Unhandled ESC sequence, return to ground state
 		o.enterState(stateGround)
 	}
 }
@@ -840,7 +840,7 @@ func (o *Output) handleOscTerminator(terminator byte) {
 	switch command {
 	// TODO: Handle other OSC commands (like setting window title: 0 or 2)
 	// case "0", "2": if len(args) > 0 { log.Printf("OSC Set Title: %s", args) }
-	
+
 	case "1337": // iTerm2 specific commands
 		o.handleItermOsc(args)
 	default:
@@ -894,32 +894,32 @@ func (o *Output) handleItermOsc(args string) {
 		log.Printf("Decoded image format: %s, Size: %v", format, img.Bounds())
 
 		// Store image at current cursor position
-		key := imageKey{r: o.cursorY, c: o.cursorX}
+		key := ImageKey{R: o.cursorY, C: o.cursorX}
 		o.images[key] = img
-		
+
 		// Mark cell as placeholder
 		if o.cursorY >= 0 && o.cursorY < o.rows && o.cursorX >= 0 && o.cursorX < o.cols {
 			o.grid[o.cursorY][o.cursorX].IsImagePlaceholder = true
 			// Maybe put a special char like obj replacement char?
-			// o.grid[o.cursorY][o.cursorX].Char = '\uFFFC' 
+			// o.grid[o.cursorY][o.cursorX].Char = '\uFFFC'
 			// o.grid[o.cursorY][o.cursorX].Width = 1 // Placeholder occupies one cell
 		}
-		
+
 		// iTerm protocol usually doesn't advance cursor, but placeholder needs placement.
 		// Should we advance? Let's not for now, image is anchored at cursor pos.
-		// o.cursorX++ 
+		// o.cursorX++
 	}
 }
 
 // GetImage retrieves a stored image by its key (top-left coordinates).
-func (o *Output) GetImage(key imageKey) image.Image {
-	// Note: We need to handle coordinates potentially shifting due to scrollback.
-	// The key passed from the renderer is based on the *visible* grid.
-	// If viewOffset > 0, the *actual* grid coordinates corresponding to the visible
-	// grid's (key.r, key.c) might be different.
-	// For now, let's assume images are only relevant/stored relative to the live grid.
-	// A more robust solution might need to store images with absolute line numbers.
-	// Simple lookup for now:
+func (o *Output) GetImage(key ImageKey) image.Image {
+	// Only attempt to retrieve images if we are looking at the live view.
+	// Images stored relative to live grid coordinates won't match when scrolled back.
+	if o.viewOffset != 0 {
+		return nil
+	}
+
+	// Simple lookup for now using live grid coordinates.
 	img, ok := o.images[key]
 	if ok {
 		return img

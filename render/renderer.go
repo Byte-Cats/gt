@@ -78,23 +78,12 @@ var xterm256Palette = []sdl.Color{
 // 	}
 // }
 
-// glyphCacheKey uniquely identifies a glyph variation (char + color for now)
-// Note: SDL Color does not work directly as a map key, need comparable representation.
-// Using Fg code from buffer might be simpler if mapBufferColorToSDL is deterministic.
-// Let's try using the buffer code directly for simplicity.
-// Alternatively, use a struct { char rune; r, g, b, a uint8 } or string representation.
+// glyphCacheKey for text glyphs (now local or adjusted)
 type glyphCacheKey struct {
 	char        rune
-	fg          int // Buffer's color code/index
+	fg          int
 	fgColorType string
-	bold        bool // Add bold to cache key
-	// Bg needed if rendering involves it directly (e.g., specific blend modes)
-	// For now, assume Bg is handled by background rect fill.
-}
-
-// imageKey uniquely identifies an image placeholder
-type imageKey struct {
-	r, c int
+	bold        bool
 }
 
 // SDLRenderer handles drawing the terminal buffer state using SDL.
@@ -105,7 +94,7 @@ type SDLRenderer struct {
 	glyphWidth        int
 	glyphHeight       int
 	glyphCache        map[glyphCacheKey]*sdl.Texture
-	imageTextureCache map[imageKey]*sdl.Texture // Cache for image textures
+	imageTextureCache map[buffer.ImageKey]*sdl.Texture // Use buffer.ImageKey
 }
 
 // NewSDLRenderer creates a new renderer that draws to the given SDL renderer using the specified font.
@@ -127,7 +116,7 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font) *SDLRender
 		glyphWidth:        width,
 		glyphHeight:       height,
 		glyphCache:        make(map[glyphCacheKey]*sdl.Texture),
-		imageTextureCache: make(map[imageKey]*sdl.Texture), // Init image cache
+		imageTextureCache: make(map[buffer.ImageKey]*sdl.Texture), // Use buffer.ImageKey
 	}
 }
 
@@ -172,43 +161,49 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 			// --- Check for and Render Image Placeholder ---
 			if cell.IsImagePlaceholder {
-				imgKey := imageKey{r: y, c: x} // Key based on visible grid coords
-				img := buf.GetImage(imgKey)    // Need buffer.GetImage(key) method
+				imgKey := buffer.ImageKey{R: y, C: x}
+				log.Printf("Found image placeholder at [%d, %d]", y, x) // LOG 1
+				img := buf.GetImage(imgKey)
 				if img != nil {
+					log.Printf("  -> Retrieved image from buffer: %T, Bounds: %v", img, img.Bounds()) // LOG 2
 					imgTexture, cached := r.imageTextureCache[imgKey]
 					var imgW, imgH int32
 
 					if !cached {
-						// Create texture from image.Image
-						surface, err := imageToSurface(img) // Need imageToSurface helper
+						log.Printf("  -> Image texture not cached, creating...") // LOG 3
+						surface, err := imageToSurface(img)
 						if err != nil {
-							log.Printf("Failed to convert image to surface: %v", err)
+							log.Printf("  -> Failed to convert image to surface: %v", err)
 						} else {
+							log.Printf("  -> Converted image to surface: %p", surface) // LOG 4
 							imgTexture, err = r.sdlRenderer.CreateTextureFromSurface(surface)
 							surface.Free()
 							if err != nil {
-								log.Printf("Failed to create texture from image surface: %v", err)
-								imgTexture = nil // Ensure it's nil on error
+								log.Printf("  -> Failed to create texture from image surface: %v", err)
+								imgTexture = nil
 							} else {
-								r.imageTextureCache[imgKey] = imgTexture // Cache it
+								log.Printf("  -> Created and cached image texture: %p", imgTexture) // LOG 5
+								r.imageTextureCache[imgKey] = imgTexture
 							}
 						}
+					} else {
+						log.Printf("  -> Found cached image texture: %p", imgTexture) // LOG 6
 					}
 
 					if imgTexture != nil {
-						// Get image texture dimensions
 						_, _, imgW, imgH, _ = imgTexture.Query()
-
-						// Calculate destination rectangle (simple placement for now)
 						imgDstRect := sdl.Rect{
 							X: int32(x * r.glyphWidth),
 							Y: int32(y * r.glyphHeight),
-							W: imgW, // Use actual image width for now
-							H: imgH, // Use actual image height for now
+							W: imgW,
+							H: imgH,
 						}
-						// TODO: Add scaling based on protocol hints (width=, height=) or cell count
+						log.Printf("  -> Drawing image texture at [%d, %d] W:%d H:%d", imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H) // LOG 7
 
-						r.sdlRenderer.Copy(imgTexture, nil, &imgDstRect)
+						errCopy := r.sdlRenderer.Copy(imgTexture, nil, &imgDstRect)
+						if errCopy != nil {
+							log.Printf("  -> Error copying image texture: %v", errCopy) // LOG 8
+						}
 
 						// Mark cells covered by this image to be skipped
 						colsToSkip := (imgW + int32(r.glyphWidth) - 1) / int32(r.glyphWidth) // Round up
@@ -227,8 +222,12 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 						// Restart inner loop to respect the new skip calculation immediately
 						skipUntilCol = imageSkipUntil[y]
 						rowHasSkip = true
-						continue // Skip the rest of this iteration (x loop)
+						continue
+					} else {
+						log.Printf("  -> Image texture is nil, cannot draw.") // LOG 9
 					}
+				} else {
+					log.Printf("  -> Image retrieved from buffer is nil") // LOG 10
 				}
 			}
 
