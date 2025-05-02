@@ -101,6 +101,14 @@ func runApp() error {
 	if err != nil {
 		return fmt.Errorf("failed to get font glyph size: %w", err)
 	}
+	// --- DEBUG LOG: Compare heights ---
+	fontHeightFromHeightFunc := font.Height()
+	log.Printf("[Metrics] font.SizeUTF8('W') -> Width: %d, Height: %d", glyphWidth, glyphHeight)
+	log.Printf("[Metrics] font.Height() -> Height: %d", fontHeightFromHeightFunc)
+	// Use font.Height() for consistency with renderer? Let's try it.
+	glyphHeight = fontHeightFromHeightFunc
+	log.Printf("[Metrics] Using glyphHeight = %d for PTY calculation", glyphHeight)
+	// --- END DEBUG LOG ---
 
 	// Define maximum initial window size in pixels
 	const maxInitialWidthPx = 900
@@ -326,23 +334,48 @@ func runApp() error {
 					}
 				// TODO: Handle Mouse events? (Scrolling, Selection)
 				case *sdl.MouseWheelEvent:
-					// Positive Y is scrolling away (Scroll Up)
-					// Negative Y is scrolling towards (Scroll Down)
-					const scrollAmount = 3 // Lines per tick
+					// Positive Y is scrolling away (Scroll Up / Shift+Scroll Right)
+					// Negative Y is scrolling towards (Scroll Down / Shift+Scroll Left)
+					// Positive X is scrolling right (not always available, use Shift+Y)
+					// Negative X is scrolling left (not always available, use Shift+Y)
+					const scrollAmount = 3 // Lines per tick for vertical scroll
 					var scrolled bool
 
-					// Try scrolling the image first (ScrollImage expects positive delta for UP)
-					scrolled = termRenderer.ScrollImage(int(ev.Y))
+					// Check for Shift modifier for horizontal scrolling
+					modState := sdl.GetModState()
+					isShift := modState&sdl.KMOD_SHIFT != 0
 
-					// If image wasn't scrolled, scroll the buffer
-					if !scrolled {
-						if ev.Y > 0 {
-							outBuffer.ScrollUp(scrollAmount)
-							scrolled = true // Mark that buffer scrolling happened
-						} else if ev.Y < 0 {
-							outBuffer.ScrollDown(scrollAmount)
-							scrolled = true // Mark that buffer scrolling happened
+					if isShift {
+						// Use ev.Y for horizontal scroll amount when Shift is pressed
+						// Adjust delta: Positive Y (scroll away) means scroll Right (+deltaX)
+						// Negative Y (scroll towards) means scroll Left (-deltaX)
+						// We can scale ev.Y if needed, but let's pass it directly for now
+						horizDelta := int(ev.Y)
+						if ev.Direction == sdl.MOUSEWHEEL_FLIPPED { // Handle natural scrolling direction
+							horizDelta *= -1
 						}
+						scrolled = termRenderer.ScrollImageHorizontal(horizDelta)
+						log.Printf("[Scroll] Horizontal attempt (Shift + Y=%d). Scrolled: %v", ev.Y, scrolled)
+					} else {
+						// Vertical scroll (no shift)
+						// Try scrolling the image first (ScrollImage expects positive delta for UP)
+						vertDelta := int(ev.Y)
+						if ev.Direction == sdl.MOUSEWHEEL_FLIPPED {
+							vertDelta *= -1
+						}
+						scrolled = termRenderer.ScrollImage(vertDelta)
+
+						// If image wasn't scrolled, scroll the buffer
+						if !scrolled {
+							if vertDelta > 0 { // Scroll Up (show older content)
+								outBuffer.ScrollUp(scrollAmount)
+								scrolled = true // Mark that buffer scrolling happened
+							} else if vertDelta < 0 { // Scroll Down (show newer content)
+								outBuffer.ScrollDown(scrollAmount)
+								scrolled = true // Mark that buffer scrolling happened
+							}
+						}
+						log.Printf("[Scroll] Vertical attempt (Y=%d). Scrolled: %v", ev.Y, scrolled)
 					}
 
 					// If any scrolling happened (image or buffer), trigger redraw
@@ -361,10 +394,11 @@ func runApp() error {
 
 		// --- Rendering ---
 		if needsRedraw {
-			rendererSDL.SetDrawColor(0, 0, 0, 255) // Black background
-			rendererSDL.Clear()
+			// Remove redundant clear; termRenderer.Draw handles the background
+			// rendererSDL.SetDrawColor(0, 0, 0, 255) // Black background
+			// rendererSDL.Clear()
 
-			// Call the new SDL renderer
+			// Call the SDL renderer - it handles background drawing internally
 			if err := termRenderer.Draw(outBuffer); err != nil {
 				log.Printf("Error drawing buffer: %v", err)
 				// Decide if error is fatal

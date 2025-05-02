@@ -138,6 +138,10 @@ type Output struct {
 	scrollbackHead  int      // Index in scrollback slice where the NEXT scrolled line will go
 	viewOffset      int      // How many lines the view is scrolled back (0 = live view)
 
+	// Scrolling Region
+	scrollTop    int // Top margin (inclusive, 0-based)
+	scrollBottom int // Bottom margin (inclusive, 0-based)
+
 	// Parser State
 	parserState   string
 	params        []int
@@ -187,16 +191,19 @@ func NewOutputBuffer(rows, cols int) *Output {
 	scrollback := make([][]Cell, defaultMaxScrollback)
 
 	return &Output{
-		grid:               grid,
-		rows:               rows,
-		cols:               cols,
-		cursorX:            0,
-		cursorY:            0,
-		scrollback:         scrollback,
-		maxScrollback:      defaultMaxScrollback,
-		scrollbackLines:    0,
-		scrollbackHead:     0,
-		viewOffset:         0,
+		grid:            grid,
+		rows:            rows,
+		cols:            cols,
+		cursorX:         0,
+		cursorY:         0,
+		scrollback:      scrollback,
+		maxScrollback:   defaultMaxScrollback,
+		scrollbackLines: 0,
+		scrollbackHead:  0,
+		viewOffset:      0,
+		// Initialize scroll region to full screen
+		scrollTop:          0,
+		scrollBottom:       rows - 1,
 		parserState:        stateGround,
 		params:             make([]int, 0, 16),
 		currentFg:          defaultFgColor,
@@ -494,7 +501,23 @@ func (o *Output) dispatchCsi(cmd rune) {
 		o.eraseInLine(mode)
 	case 'm': // SGR - Select Graphic Rendition
 		o.handleSgr()
-	// TODO: Add more CSI commands (Scrolling, Insert/Delete Chars/Lines, etc.)
+	case 'L': // IL - Insert Lines
+		n := o.getParam(1, 1) // Default 1 line
+		o.insertLines(n)
+	case 'M': // DL - Delete Lines
+		n := o.getParam(1, 1) // Default 1 line
+		o.deleteLines(n)
+	case 'r': // DECSTBM - Set Top and Bottom Margins (Scrolling Region)
+		top := o.getParam(1, 1)         // Default to 1
+		bottom := o.getParam(2, o.rows) // Default to last row
+		o.setScrollRegion(top, bottom)
+	case 'S': // SU - Scroll Up
+		n := o.getParam(1, 1) // Default 1 line
+		o.scrollUpLines(n)    // Scroll content *up*, new lines at bottom
+	case 'T': // SD - Scroll Down
+		n := o.getParam(1, 1) // Default 1 line
+		o.scrollDownLines(n)  // Scroll content *down*, new lines at top
+	// TODO: Add more CSI commands (Insert/Delete Chars @/P, etc.)
 	default:
 		// Unhandled CSI command
 		// fmt.Printf("Unhandled CSI: params=%v, private=%c, cmd=%c\n", o.params, o.privateMarker, cmd)
@@ -1036,4 +1059,170 @@ func (o *Output) HasChanged() bool {
 // ResetChanged resets the changed flag to false.
 func (o *Output) ResetChanged() {
 	o.changed = false
+}
+
+// insertLines inserts n blank lines at the cursor's current row, respecting scroll region.
+func (o *Output) insertLines(n int) {
+	if n <= 0 {
+		return
+	}
+	// Operation must happen within the scroll region
+	if o.cursorY < o.scrollTop || o.cursorY > o.scrollBottom {
+		return
+	}
+
+	// Clamp n to not insert more lines than available below cursor *within the region*
+	n = min(n, o.scrollBottom-o.cursorY+1)
+	if n <= 0 {
+		return
+	}
+
+	log.Printf("[CSI L] Inserting %d lines at row %d (Region: %d-%d)", n, o.cursorY, o.scrollTop, o.scrollBottom)
+
+	// Make space by shifting lines down within the region
+	// copy(dst, src)
+	// dst starts at cursorY + n
+	// src starts at cursorY
+	// src ends just before scrollBottom - n + 1
+	numToCopy := (o.scrollBottom + 1) - (o.cursorY + n)
+	if numToCopy > 0 {
+		copy(o.grid[o.cursorY+n:o.scrollBottom+1], o.grid[o.cursorY:o.scrollBottom-n+1])
+	}
+
+	// Clear the new lines inserted at cursorY up to min(cursorY+n, scrollBottom+1)
+	clearEnd := min(o.cursorY+n, o.scrollBottom+1)
+	for i := o.cursorY; i < clearEnd; i++ {
+		newRow := make([]Cell, o.cols)
+		for c := range newRow {
+			newRow[c] = newDefaultCell()
+		}
+		o.grid[i] = newRow
+	}
+	o.changed = true
+}
+
+// deleteLines deletes n lines starting from the cursor's current row, respecting scroll region.
+func (o *Output) deleteLines(n int) {
+	if n <= 0 {
+		return
+	}
+	// Operation must happen within the scroll region
+	if o.cursorY < o.scrollTop || o.cursorY > o.scrollBottom {
+		return
+	}
+
+	// Clamp n to not delete more lines than available from cursor down *within the region*
+	n = min(n, o.scrollBottom-o.cursorY+1)
+	if n <= 0 {
+		return
+	}
+
+	log.Printf("[CSI M] Deleting %d lines at row %d (Region: %d-%d)", n, o.cursorY, o.scrollTop, o.scrollBottom)
+
+	// Shift lines up to fill the gap within the region
+	// copy(dst, src)
+	// dst starts at cursorY
+	// src starts at cursorY + n
+	// src ends at scrollBottom + 1
+	numToCopy := (o.scrollBottom + 1) - (o.cursorY + n)
+	if numToCopy > 0 {
+		copy(o.grid[o.cursorY:o.scrollBottom-n+1], o.grid[o.cursorY+n:o.scrollBottom+1])
+	}
+
+	// Clear the lines at the bottom of the region that are now empty
+	clearStart := max(o.cursorY, o.scrollBottom-n+1)
+	for i := clearStart; i <= o.scrollBottom; i++ {
+		newRow := make([]Cell, o.cols)
+		for c := range newRow {
+			newRow[c] = newDefaultCell()
+		}
+		o.grid[i] = newRow
+	}
+	o.changed = true
+}
+
+// setScrollRegion defines the scrolling region (DECSTBM).
+// Params are 1-based, internal storage is 0-based.
+func (o *Output) setScrollRegion(top, bottom int) {
+	// Convert 1-based parameters to 0-based indices
+	topIdx := max(0, top-1)
+	bottomIdx := max(0, bottom-1)
+
+	// Validate: top must be less than bottom, both within screen bounds
+	if topIdx < bottomIdx && bottomIdx < o.rows {
+		o.scrollTop = topIdx
+		o.scrollBottom = bottomIdx
+		log.Printf("[CSI r] Set scroll region: top=%d, bottom=%d (0-based)", o.scrollTop, o.scrollBottom)
+	} else {
+		// Invalid region, typically resets to full screen
+		o.scrollTop = 0
+		o.scrollBottom = o.rows - 1
+		log.Printf("[CSI r] Invalid scroll region params (%d, %d). Resetting to full screen.", top, bottom)
+	}
+	// Move cursor to home position (0,0) after setting scroll region
+	o.cursorX = 0
+	o.cursorY = 0
+	o.changed = true
+}
+
+// scrollUpLines scrolls the content within the scroll region up by n lines.
+// New blank lines are added at the bottom of the region.
+// This is equivalent to CSI n S
+func (o *Output) scrollUpLines(n int) {
+	if n <= 0 {
+		return
+	}
+	// Clamp n to the size of the scroll region
+	n = min(n, o.scrollBottom-o.scrollTop+1)
+	if n <= 0 {
+		return
+	}
+
+	log.Printf("[CSI S] Scrolling Up %d lines (Region: %d-%d)", n, o.scrollTop, o.scrollBottom)
+
+	// Shift lines up within the region
+	// copy(dst, src) - copy from grid[scrollTop+n:] to grid[scrollTop:]
+	copy(o.grid[o.scrollTop:o.scrollBottom-n+1], o.grid[o.scrollTop+n:o.scrollBottom+1])
+
+	// Clear the lines at the bottom of the region
+	clearStart := o.scrollBottom - n + 1
+	for i := clearStart; i <= o.scrollBottom; i++ {
+		newRow := make([]Cell, o.cols)
+		for c := range newRow {
+			newRow[c] = newDefaultCell()
+		}
+		o.grid[i] = newRow
+	}
+	o.changed = true
+}
+
+// scrollDownLines scrolls the content within the scroll region down by n lines.
+// New blank lines are added at the top of the region.
+// This is equivalent to CSI n T
+func (o *Output) scrollDownLines(n int) {
+	if n <= 0 {
+		return
+	}
+	// Clamp n to the size of the scroll region
+	n = min(n, o.scrollBottom-o.scrollTop+1)
+	if n <= 0 {
+		return
+	}
+
+	log.Printf("[CSI T] Scrolling Down %d lines (Region: %d-%d)", n, o.scrollTop, o.scrollBottom)
+
+	// Make space by shifting lines down within the region
+	// copy(dst, src)
+	copy(o.grid[o.scrollTop+n:o.scrollBottom+1], o.grid[o.scrollTop:o.scrollBottom-n+1])
+
+	// Clear the lines at the top of the region
+	clearEnd := o.scrollTop + n
+	for i := o.scrollTop; i < clearEnd; i++ {
+		newRow := make([]Cell, o.cols)
+		for c := range newRow {
+			newRow[c] = newDefaultCell()
+		}
+		o.grid[i] = newRow
+	}
+	o.changed = true
 }

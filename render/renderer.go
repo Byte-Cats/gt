@@ -7,6 +7,7 @@ import (
 	"image/draw" // Standard Go draw package
 	"log"
 	"strconv"
+	"strings"
 	"unsafe"
 
 	"gt/config"
@@ -112,9 +113,13 @@ type SDLRenderer struct {
 	cellHeight        int
 
 	// Image scrolling state
-	imgScrollOffsetY     int32        // Current scroll offset for the scrollable image (pixels)
+	imgScrollOffsetX     int32        // Horizontal scroll offset (pixels)
+	imgScrollOffsetY     int32        // Vertical scroll offset (pixels)
+	scrollableImgTargetW int32        // Target width of the last potentially scrollable image
 	scrollableImgTargetH int32        // Target height of the last potentially scrollable image drawn
+	scrollableImgAnchorX int32        // X position (pixels) where the left of the scrollable image is anchored
 	scrollableImgAnchorY int32        // Y position (pixels) where the top of the scrollable image is anchored
+	lastWindowWidthPx    int32        // Last known window width in pixels
 	lastWindowHeightPx   int32        // Last known window height in pixels
 	theme                config.Theme // Store the loaded theme
 	topPaddingPx         int          // Top padding (e.g., for macOS title bar) in pixels
@@ -144,9 +149,13 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme conf
 		cellWidth:         width,
 		cellHeight:        height,
 		// Initialize image scroll state
+		imgScrollOffsetX:     0,
 		imgScrollOffsetY:     0,
-		scrollableImgTargetH: -1, // Indicate no scrollable image initially
+		scrollableImgTargetW: -1, // Indicate no scrollable image initially
+		scrollableImgTargetH: -1,
+		scrollableImgAnchorX: -1,
 		scrollableImgAnchorY: -1,
+		lastWindowWidthPx:    -1,
 		lastWindowHeightPx:   -1,
 		theme:                theme,        // Store the theme
 		topPaddingPx:         topPaddingPx, // Store top padding
@@ -175,13 +184,21 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	if err != nil {
 		log.Printf("Error getting renderer output size: %v", err)
 		// Use last known size or default?
+		ww = r.lastWindowWidthPx
 		wh = r.lastWindowHeightPx
+		if ww <= 0 {
+			ww = 800
+		} // Fallback
 		if wh <= 0 {
 			wh = 600
 		} // Fallback
 	}
+	r.lastWindowWidthPx = ww  // Store current window width
 	r.lastWindowHeightPx = wh // Store current window height
 	termW := ww               // Use pixel width for termW in calculations
+	termH := wh               // Use pixel height
+
+	// log.Printf("[Renderer.Draw] Using topPaddingPx: %d", r.topPaddingPx)
 
 	// Draw background (Solid or Gradient)
 	if r.theme.Gradient.Enabled {
@@ -195,9 +212,11 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	}
 
 	// Reset scrollable image tracking for this frame.
-	// It will be set if a scrollable image is encountered and drawn.
+	r.scrollableImgTargetW = -1
 	r.scrollableImgTargetH = -1
-	// Don't reset r.imgScrollOffsetY here, preserve it between frames
+	r.scrollableImgAnchorX = -1
+	r.scrollableImgAnchorY = -1
+	// Don't reset scroll offsets (imgScrollOffsetX, imgScrollOffsetY)
 
 	grid := buf.GetVisibleGrid()
 	rows := len(grid)
@@ -335,37 +354,51 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 						if queryErr != nil {
 							log.Printf("   -> Error querying image texture: %v", queryErr)
 						} else {
-							// Calculate target dimensions based on constraints
-							// termW is now window pixel width
+							// Calculate target dimensions based on constraints (using termW and termH)
 							targetW, targetH := r.calculateTargetDimensions(
 								wConstraint, hConstraint, preserveAspect,
-								texW, texH, termW, r.lastWindowHeightPx)
+								texW, texH, termW, termH) // Pass termH now
 
-							// Store details if this image is potentially scrollable (consider padding)
-							windowVisibleHeight := r.lastWindowHeightPx - int32(r.topPaddingPx)
+							// Store details if this image is potentially scrollable (horizontal or vertical)
+							windowVisibleWidth := termW // No horizontal padding assumed
+							windowVisibleHeight := termH - int32(r.topPaddingPx)
 							if windowVisibleHeight < 0 {
 								windowVisibleHeight = 0
 							}
+
+							anchorX := int32(x * r.cellWidth)
+							anchorY := int32(y*r.cellHeight) + int32(r.topPaddingPx) // Anchor includes padding
+
+							if targetW > windowVisibleWidth {
+								r.scrollableImgTargetW = targetW
+								r.scrollableImgAnchorX = anchorX
+								maxScrollX := targetW - windowVisibleWidth
+								if maxScrollX < 0 {
+									maxScrollX = 0
+								}
+								r.imgScrollOffsetX = max(0, min(r.imgScrollOffsetX, maxScrollX))
+							}
 							if targetH > windowVisibleHeight {
 								r.scrollableImgTargetH = targetH
-								r.scrollableImgAnchorY = int32(y*r.cellHeight) + int32(r.topPaddingPx) // Anchor includes padding
-								// Ensure scroll offset is still valid relative to visible height
-								maxScroll := targetH - windowVisibleHeight
-								if maxScroll < 0 {
-									maxScroll = 0
-								} // Ensure maxScroll is not negative
-								r.imgScrollOffsetY = max(0, min(r.imgScrollOffsetY, maxScroll))
+								r.scrollableImgAnchorY = anchorY
+								maxScrollY := targetH - windowVisibleHeight
+								if maxScrollY < 0 {
+									maxScrollY = 0
+								}
+								r.imgScrollOffsetY = max(0, min(r.imgScrollOffsetY, maxScrollY))
 							}
 
-							// Destination rect: position includes top padding AND scroll offset
+							// Destination rect: position includes top padding AND scroll offsets
 							imgDstRect := sdl.Rect{
-								X: int32(x * r.cellWidth),
-								Y: int32(y*r.cellHeight) + int32(r.topPaddingPx) - r.imgScrollOffsetY, // APPLY PADDING & SCROLL
+								X: anchorX - r.imgScrollOffsetX, // APPLY HORIZONTAL SCROLL
+								Y: anchorY - r.imgScrollOffsetY, // APPLY VERTICAL SCROLL & PADDING
 								W: targetW,
 								H: targetH,
 							}
-							log.Printf("   -> Drawing image texture at [%d, %d] W:%d H:%d (Padding: %d, ScrollY: %d)",
-								imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H, r.topPaddingPx, r.imgScrollOffsetY)
+							log.Printf("   -> Drawing image texture at Dst=[%d, %d] W:%d H:%d (Anchor=[%d,%d], Pad=%d, Scroll=[%d,%d])",
+								imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H,
+								r.scrollableImgAnchorX, r.scrollableImgAnchorY,
+								r.topPaddingPx, r.imgScrollOffsetX, r.imgScrollOffsetY)
 
 							// Clip rect is already set outside the loop
 							errCopy := r.renderer.Copy(imgTexture, nil, &imgDstRect)
@@ -423,6 +456,10 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				W: int32(r.glyphWidth),
 				H: int32(r.glyphHeight),
 			}
+			// if y == 0 && x == 0 {
+			// 	log.Printf("[Renderer.Draw] First cell bgRect.Y: %d (y=%d, glyphH=%d, pad=%d)",
+			// 		bgRect.Y, y, r.glyphHeight, r.topPaddingPx)
+			// }
 			r.renderer.SetDrawColor(bgColorSDL.R, bgColorSDL.G, bgColorSDL.B, bgColorSDL.A)
 			r.renderer.FillRect(&bgRect)
 
@@ -764,67 +801,94 @@ func (r *SDLRenderer) mapBufferColorToSDL(value int, colorType string) sdl.Color
 // func (r *SDLRenderer) ClearScreen() error { ... }
 
 // calculateTargetDimensions determines the final pixel width and height based on constraints.
-// NOTE: Temporarily simplified to ignore constraints and fit width, preserving aspect.
 func (r *SDLRenderer) calculateTargetDimensions(wConstraint, hConstraint string, preserveAspect bool, nativeW, nativeH, termW, termH int32) (targetW, targetH int32) {
-	log.Printf("[CalcDims] Input: WConstraint=%s, HConstraint=%s, Preserve=%v, Native=%dx%d, Term=%dx%d",
-		wConstraint, hConstraint, preserveAspect, nativeW, nativeH, termW, termH)
+	log.Printf("[CalcDims] Input: WConstraint=%s, HConstraint=%s, Preserve=%v, Native=%dx%d, Term=%dx%d, Cell=%dx%d",
+		wConstraint, hConstraint, preserveAspect, nativeW, nativeH, termW, termH, r.cellWidth, r.cellHeight)
 
-	// --- Simplified Logic ---
-	if nativeW <= 0 || nativeH <= 0 {
-		log.Printf("[CalcDims] Invalid native dimensions, returning 1x1.")
-		return 1, 1 // Cannot calculate aspect ratio
+	// Helper function to parse a single dimension constraint string
+	parseConstraint := func(constraint string, nativeDim int32, cellDim int, termDimPx int32) int32 {
+		constraint = strings.ToLower(strings.TrimSpace(constraint))
+		if constraint == "auto" {
+			return nativeDim
+		}
+		if strings.HasSuffix(constraint, "px") {
+			valStr := strings.TrimSuffix(constraint, "px")
+			val, err := strconv.Atoi(valStr)
+			if err == nil && val > 0 {
+				return int32(val)
+			}
+		} else if strings.HasSuffix(constraint, "%") {
+			valStr := strings.TrimSuffix(constraint, "%")
+			val, err := strconv.Atoi(valStr)
+			if err == nil && val > 0 && termDimPx > 0 {
+				// Calculate percentage of the terminal's drawable dimension
+				return int32(float64(termDimPx) * (float64(val) / 100.0))
+			}
+		} else { // Assume number represents character cells
+			val, err := strconv.Atoi(constraint)
+			if err == nil && val > 0 && cellDim > 0 {
+				return int32(val * cellDim)
+			}
+		}
+		// Fallback to native dimension if parsing fails or is invalid
+		return nativeDim
 	}
 
-	// 1. Start with native dimensions
-	targetW = nativeW
-	targetH = nativeH
-	log.Printf("[CalcDims] Step 1 (Native): %dx%d", targetW, targetH)
+	// Parse constraints to get initial desired pixel dimensions
+	initialW := parseConstraint(wConstraint, nativeW, r.cellWidth, termW)
+	initialH := parseConstraint(hConstraint, nativeH, r.cellHeight, termH)
+	log.Printf("[CalcDims] Parsed Constraints: Initial W=%dpx, Initial H=%dpx", initialW, initialH)
 
-	nativeAspect := float64(nativeW) / float64(nativeH)
-
-	// 2. Clamp width to terminal width
-	originalTargetW := targetW
-	targetW = max(1, min(targetW, termW))
-	log.Printf("[CalcDims] Step 2 (Clamp Width): %dx%d (TermW: %d)", targetW, targetH, termW)
-
-	// 3. If width was clamped, adjust height to preserve aspect ratio
-	if targetW != originalTargetW {
-		targetH = int32(float64(targetW) / nativeAspect)
-		log.Printf("[CalcDims] Step 3 (Adjust Height for Aspect): %dx%d (NativeAspect: %f)", targetW, targetH, nativeAspect)
+	// --- Start Calculation ---
+	targetW = initialW // Start with parsed/native values
+	targetH = initialH
+	nativeAspect := float64(0)
+	if nativeW > 0 && nativeH > 0 {
+		nativeAspect = float64(nativeW) / float64(nativeH)
 	}
 
-	// 4. Ensure height is at least 1
-	targetH = max(1, targetH)
-	log.Printf("[CalcDims] Step 4 (Ensure Min Height): %dx%d", targetW, targetH)
+	isWidthAuto := (wConstraint == "auto" || wConstraint == "")
+	isHeightAuto := (hConstraint == "auto" || hConstraint == "")
 
-	// --- Original Logic (commented out for debugging) ---
-	/*
-		passeConstraint := func(constraint string, nativeDim int32, cellDim int, termDimPx int32) int32 {
-			// ... (rest of the parsing logic) ...
-		}
-
-		initialW := parseConstraint(wConstraint, nativeW, r.cellWidth, termW)
-		initialH := parseConstraint(hConstraint, nativeH, r.cellHeight, termH)
-
-		if preserveAspect && nativeW > 0 && nativeH > 0 {
-			// ... (rest of the aspect logic) ...
+	if isWidthAuto {
+		log.Printf("[CalcDims] Width is auto, setting targetW to termW (%dpx)", termW)
+		targetW = termW // Force full width
+		if preserveAspect && nativeAspect > 0 {
+			targetH = int32(float64(targetW) / nativeAspect) // Calculate H based on full width
+			log.Printf("[CalcDims] Width auto, Preserve aspect -> Calculated H: %dpx", targetH)
 		} else {
-			// ... (rest of the non-aspect logic) ...
+			// Width auto, no aspect OR invalid aspect. Height remains initialH (parsed from constraint or native)
+			log.Printf("[CalcDims] Width auto, No Aspect -> H remains initial: %dpx", targetH)
 		}
-
-		widthBeforeClamp := targetW
-		targetW = max(1, min(targetW, termW))
-		if preserveAspect && nativeW > 0 && nativeH > 0 && targetW != widthBeforeClamp {
-			targetH = int32(float64(targetW) / (float64(nativeW) / float64(nativeH)))
-		}
-		if !preserveAspect {
-			targetH = max(1, min(targetH, termH))
+	} else {
+		// Width is specific (not auto)
+		log.Printf("[CalcDims] Width is specific: %dpx", targetW)
+		if preserveAspect && nativeAspect > 0 {
+			if isHeightAuto {
+				// Width specific, height auto: Calculate H based on specific W
+				targetH = int32(float64(targetW) / nativeAspect)
+				log.Printf("[CalcDims] Width specific, Height auto -> Calculated H: %dpx", targetH)
+			} else {
+				// Both dimensions specific, preserve aspect. Adjust the one that deviates more.
+				currentAspect := float64(targetW) / float64(targetH)
+				if currentAspect > nativeAspect { // Target is wider than native; adjust width based on height
+					targetW = int32(float64(targetH) * nativeAspect)
+				} else if currentAspect < nativeAspect { // Target is narrower than native; adjust height based on width
+					targetH = int32(float64(targetW) / nativeAspect)
+				}
+				log.Printf("[CalcDims] Both specific, Preserve aspect -> Corrected: W=%dpx, H=%dpx", targetW, targetH)
+			}
 		} else {
-			targetH = max(1, targetH)
+			// Width specific, No aspect preservation. Height remains initialH.
+			log.Printf("[CalcDims] Width specific, No Aspect. W=%d, H=%d", targetW, targetH)
 		}
-	*/
+	}
 
-	log.Printf("[CalcDims] Final Output: %dx%d", targetW, targetH)
+	// Final validation/adjustment (NO downward clamping)
+	targetW = max(1, targetW) // Ensure at least 1px wide
+	targetH = max(1, targetH) // Ensure at least 1px high
+
+	log.Printf("[CalcDims] Final Output (No Clamping): %dx%d", targetW, targetH)
 	return targetW, targetH
 }
 
@@ -864,6 +928,41 @@ func (r *SDLRenderer) ScrollImage(deltaY int) bool {
 	if clampedOffsetY != r.imgScrollOffsetY {
 		r.imgScrollOffsetY = clampedOffsetY
 		log.Printf("[ScrollImage] Scrolled. OffsetY: %d (Max: %d)", r.imgScrollOffsetY, maxScroll)
+		return true // Scrolling happened
+	}
+
+	return false // No change in scroll offset
+}
+
+// ScrollImageHorizontal attempts to scroll the last rendered wide image horizontally.
+// deltaX is the number of scroll *units* (positive for right, negative for left).
+// Returns true if image scrolling occurred, false otherwise.
+func (r *SDLRenderer) ScrollImageHorizontal(deltaX int) bool {
+	// Get current terminal width
+	termW := r.lastWindowWidthPx
+	if termW <= 0 {
+		return false // Cannot determine scroll bounds
+	}
+
+	// Check if we have a horizontally scrollable image recorded from the last draw
+	if r.scrollableImgTargetW <= termW {
+		r.scrollableImgTargetW = -1 // Reset if not scrollable
+		return false                // Not scrollable
+	}
+
+	maxScrollX := r.scrollableImgTargetW - termW
+	// Arbitrarily map scroll delta units to pixels (e.g., multiply by cell width?)
+	// Let's use a fraction of cell width for finer control
+	deltaPx := int32(deltaX * (r.cellWidth / 2))
+
+	newOffsetX := r.imgScrollOffsetX + deltaPx // Add delta for horizontal scroll
+
+	// Clamp the new offset
+	clampedOffsetX := max(0, min(newOffsetX, maxScrollX))
+
+	if clampedOffsetX != r.imgScrollOffsetX {
+		r.imgScrollOffsetX = clampedOffsetX
+		log.Printf("[ScrollImageHorizontal] Scrolled. OffsetX: %d (Max: %d)", r.imgScrollOffsetX, maxScrollX)
 		return true // Scrolling happened
 	}
 
