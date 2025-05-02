@@ -95,20 +95,13 @@ type Cell struct {
 	Reverse            bool
 }
 
-// newDefaultCell creates a cell with default attributes.
-func newDefaultCell() Cell {
-	return Cell{
-		Char:               ' ',
-		Width:              1,
-		IsImagePlaceholder: false, // Default to false
-		Fg:                 defaultFgColor,
-		Bg:                 defaultBgColor,
-		FgColorType:        defaultColorType,
-		BgColorType:        defaultColorType,
-		Bold:               false,
-		Underline:          false,
-		Reverse:            false,
-	}
+// StoredImage holds the image data, its unique ID, and display constraints.
+type StoredImage struct {
+	Img              image.Image
+	ID               int
+	WidthConstraint  string // e.g., "auto", "N", "Npx", "N%"
+	HeightConstraint string // e.g., "auto", "N", "Npx", "N%"
+	PreserveAspect   bool
 }
 
 // Output represents the state of the terminal screen buffer.
@@ -144,7 +137,8 @@ type Output struct {
 	// TODO: Add other current attributes
 
 	// Stored Images
-	images map[ImageKey]image.Image // Use exported type for key
+	images         map[ImageKey]StoredImage // Use exported type for key & store ID
+	imageIDCounter int                      // Counter for unique image IDs
 
 	// TODO: Add scrollback buffer
 	// TODO: Add SGR state (current colors, bold, etc.)
@@ -157,7 +151,8 @@ const st = '\\'  // String Terminator rune (backslash)
 const stateGround = "GROUND"
 const stateEsc = "ESC"
 const stateCsi = "CSI"
-const stateOsc = "OSC" // Operating System Command
+const stateOsc = "OSC"                          // Operating System Command
+const stateEscIntermediate = "ESC_INTERMEDIATE" // For ESC sequences like charset designation
 
 // NewOutputBuffer creates a new terminal buffer with given dimensions and scrollback.
 func NewOutputBuffer(rows, cols int) *Output {
@@ -191,7 +186,8 @@ func NewOutputBuffer(rows, cols int) *Output {
 		currentBold:        false,
 		currentUnderline:   false,
 		currentReverse:     false,
-		images:             make(map[ImageKey]image.Image), // Initialize image map
+		images:             make(map[ImageKey]StoredImage), // Initialize image map
+		imageIDCounter:     0,                              // Initialize counter
 	}
 }
 
@@ -234,6 +230,8 @@ func (o *Output) Write(p []byte) (n int, err error) {
 			o.handleCsi(byteVal)
 		case stateOsc:
 			o.handleOsc(byteVal)
+		case stateEscIntermediate:
+			o.handleEscIntermediate(byteVal)
 		default:
 			// Should not happen, reset state
 			o.enterState(stateGround)
@@ -354,6 +352,14 @@ func (o *Output) handleEsc(b byte) {
 		o.enterState(stateCsi)
 	case ']': // OSC
 		o.enterState(stateOsc)
+	case '(': // Designate G0 Character Set
+		o.enterState(stateEscIntermediate)
+	case ')': // Designate G1 Character Set
+		o.enterState(stateEscIntermediate)
+	case '*': // Designate G2 Character Set
+		o.enterState(stateEscIntermediate)
+	case '+': // Designate G3 Character Set
+		o.enterState(stateEscIntermediate)
 	case byte(st): // Use the rune constant `st` for the case comparison
 		if o.parserState == stateOsc {
 			o.handleOscTerminator(b)
@@ -362,6 +368,8 @@ func (o *Output) handleEsc(b byte) {
 		}
 	// TODO: Handle other ESC sequences
 	default:
+		// Unknown/unhandled ESC sequence intermediate byte, revert to ground
+		log.Printf("[ESC] Unhandled intermediate: %c (%d)", b, b) // DEBUG LOG
 		o.enterState(stateGround)
 	}
 }
@@ -428,6 +436,7 @@ func (o *Output) getParam(n int, defaultVal int) int {
 
 // dispatchCsi executes the command based on the final CSI character.
 func (o *Output) dispatchCsi(cmd rune) {
+	log.Printf("[CSI] Cmd: %c (%d), Params: %v, Private: %c", cmd, cmd, o.params, o.privateMarker) // DEBUG LOG
 	switch cmd {
 	case 'A': // CUU - Cursor Up
 		n := o.getParam(1, 1)  // Default is 1 line
@@ -470,8 +479,10 @@ func (o *Output) dispatchCsi(cmd rune) {
 // handleSgr processes SGR (Select Graphic Rendition) escape codes.
 func (o *Output) handleSgr() {
 	if len(o.params) == 0 {
-		o.params = append(o.params, AttrReset)
+		o.params = append(o.params, AttrReset) // Ensure reset has a param [0]
 	}
+
+	log.Printf("[SGR] Params: %v", o.params) // DEBUG LOG
 
 	i := 0
 	for i < len(o.params) {
@@ -747,6 +758,16 @@ func (o *Output) GetCursorPos() (int, int) {
 	return o.cursorX, o.cursorY
 }
 
+// Rows returns the number of rows in the buffer grid.
+func (o *Output) Rows() int {
+	return o.rows
+}
+
+// Cols returns the number of columns in the buffer grid.
+func (o *Output) Cols() int {
+	return o.cols
+}
+
 // Resize changes the buffer dimensions, preserving content where possible.
 func (o *Output) Resize(newRows, newCols int) {
 	if newRows == o.rows && newCols == o.cols {
@@ -863,13 +884,33 @@ func (o *Output) handleItermOsc(args string) {
 		optionsStr := parts[0]
 		base64Data := parts[1]
 
-		// Check for inline=1 (required for display)
+		// --- Parse Options ---
+		widthConstraint := "auto"
+		heightConstraint := "auto"
+		preserveAspect := true // Default to true based on observation
 		isInline := false
+
 		opts := strings.Split(optionsStr, ";")
 		for _, opt := range opts {
-			if opt == "inline=1" {
+			if kv := strings.SplitN(opt, "=", 2); len(kv) == 2 {
+				key := strings.ToLower(kv[0])
+				value := kv[1]
+				switch key {
+				case "width":
+					widthConstraint = value
+				case "height":
+					heightConstraint = value
+				case "inline":
+					if value == "1" {
+						isInline = true
+					}
+				case "preserveaspectratio":
+					if value == "0" {
+						preserveAspect = false
+					} // Assume 1 or omitted means true
+				}
+			} else if opt == "inline=1" { // Handle case where SplitN doesn't work as expected
 				isInline = true
-				break
 			}
 		}
 
@@ -878,7 +919,7 @@ func (o *Output) handleItermOsc(args string) {
 			return
 		}
 
-		// Decode Base64
+		// --- Decode Base64 ---
 		imgBytes, err := base64.StdEncoding.DecodeString(base64Data)
 		if err != nil {
 			log.Printf("Failed to decode base64 image data: %v", err)
@@ -893,9 +934,16 @@ func (o *Output) handleItermOsc(args string) {
 		}
 		log.Printf("Decoded image format: %s, Size: %v", format, img.Bounds())
 
-		// Store image at current cursor position
+		// Store image at current cursor position with a new unique ID and constraints
+		o.imageIDCounter++ // Increment for a new ID
 		key := ImageKey{R: o.cursorY, C: o.cursorX}
-		o.images[key] = img
+		o.images[key] = StoredImage{
+			Img:              img,
+			ID:               o.imageIDCounter,
+			WidthConstraint:  widthConstraint,
+			HeightConstraint: heightConstraint,
+			PreserveAspect:   preserveAspect,
+		}
 
 		// Mark cell as placeholder
 		if o.cursorY >= 0 && o.cursorY < o.rows && o.cursorX >= 0 && o.cursorX < o.cols {
@@ -911,18 +959,44 @@ func (o *Output) handleItermOsc(args string) {
 	}
 }
 
-// GetImage retrieves a stored image by its key (top-left coordinates).
-func (o *Output) GetImage(key ImageKey) image.Image {
+// GetImage retrieves a stored image, its ID, and display constraints by its key.
+func (o *Output) GetImage(key ImageKey) (image.Image, int, string, string, bool) {
 	// Only attempt to retrieve images if we are looking at the live view.
 	// Images stored relative to live grid coordinates won't match when scrolled back.
 	if o.viewOffset != 0 {
-		return nil
+		return nil, 0, "", "", false
 	}
 
 	// Simple lookup for now using live grid coordinates.
-	img, ok := o.images[key]
+	storedImg, ok := o.images[key]
 	if ok {
-		return img
+		return storedImg.Img, storedImg.ID, storedImg.WidthConstraint, storedImg.HeightConstraint, storedImg.PreserveAspect
 	}
-	return nil
+	return nil, 0, "", "", false
+}
+
+// newDefaultCell creates a cell with default attributes.
+func newDefaultCell() Cell {
+	return Cell{
+		Char:               ' ',
+		Width:              1,
+		IsImagePlaceholder: false, // Default to false
+		Fg:                 defaultFgColor,
+		Bg:                 defaultBgColor,
+		FgColorType:        defaultColorType,
+		BgColorType:        defaultColorType,
+		Bold:               false,
+		Underline:          false,
+		Reverse:            false,
+	}
+}
+
+// handleEscIntermediate consumes the byte following ESC (, ESC ), etc.
+func (o *Output) handleEscIntermediate(b byte) {
+	// This state is entered after ESC (, ESC ), ESC *, or ESC +
+	// It expects one character designating the character set (e.g., 'B' for ASCII, '0' for DEC Special Graphics)
+	// We don't actually *implement* character set switching yet, but we need to consume the character correctly.
+	log.Printf("[ESC Intermediate] Consuming designator: %c (%d)", b, b) // DEBUG LOG
+	// After consuming the designator, return to ground state
+	o.enterState(stateGround)
 }

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"gt/buffer"
 	"image"
+	"image/draw" // Standard Go draw package
 	"log"
+	"unsafe"
 
 	"github.com/veandco/go-sdl2/sdl"
 	"github.com/veandco/go-sdl2/ttf"
@@ -86,6 +88,13 @@ type glyphCacheKey struct {
 	bold        bool
 }
 
+// imageCacheKey is the key for the image texture cache.
+// It includes the buffer key (coordinates) and the unique image ID.
+type imageCacheKey struct {
+	BufKey buffer.ImageKey
+	ImgID  int
+}
+
 // SDLRenderer handles drawing the terminal buffer state using SDL.
 type SDLRenderer struct {
 	sdlRenderer       *sdl.Renderer
@@ -94,7 +103,16 @@ type SDLRenderer struct {
 	glyphWidth        int
 	glyphHeight       int
 	glyphCache        map[glyphCacheKey]*sdl.Texture
-	imageTextureCache map[buffer.ImageKey]*sdl.Texture // Use buffer.ImageKey
+	imageTextureCache map[imageCacheKey]*sdl.Texture // Cache for image textures
+	renderer          *sdl.Renderer
+	cellWidth         int
+	cellHeight        int
+
+	// Image scrolling state
+	imgScrollOffsetY     int32 // Current scroll offset for the scrollable image (pixels)
+	scrollableImgTargetH int32 // Target height of the last potentially scrollable image drawn
+	scrollableImgAnchorY int32 // Y position (pixels) where the top of the scrollable image is anchored
+	lastWindowHeightPx   int32 // Last known window height in pixels
 }
 
 // NewSDLRenderer creates a new renderer that draws to the given SDL renderer using the specified font.
@@ -116,24 +134,53 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font) *SDLRender
 		glyphWidth:        width,
 		glyphHeight:       height,
 		glyphCache:        make(map[glyphCacheKey]*sdl.Texture),
-		imageTextureCache: make(map[buffer.ImageKey]*sdl.Texture), // Use buffer.ImageKey
+		imageTextureCache: make(map[imageCacheKey]*sdl.Texture), // Initialize image cache
+		renderer:          renderer,
+		cellWidth:         width,
+		cellHeight:        height,
+		// Initialize image scroll state
+		imgScrollOffsetY:     0,
+		scrollableImgTargetH: -1, // Indicate no scrollable image initially
+		scrollableImgAnchorY: -1,
+		lastWindowHeightPx:   -1,
 	}
 }
 
 // Destroy frees resources used by the renderer, including cached textures.
 func (r *SDLRenderer) Destroy() {
+	// Destroy cached glyph textures
 	for _, texture := range r.glyphCache {
 		texture.Destroy()
 	}
-	for _, texture := range r.imageTextureCache {
+	// Destroy cached image textures
+	for _, texture := range r.imageTextureCache { // Iterate over the new cache type
 		texture.Destroy()
 	}
+	// Destroy fonts
 	r.glyphCache = nil
 	r.imageTextureCache = nil
 }
 
 // Draw renders the current state of the buffer to the SDL renderer.
 func (r *SDLRenderer) Draw(buf *buffer.Output) error {
+	// Get current window dimensions
+	ww, wh, err := r.renderer.GetOutputSize()
+	if err != nil {
+		log.Printf("Error getting renderer output size: %v", err)
+		// Use last known size or default?
+		wh = r.lastWindowHeightPx
+		if wh <= 0 {
+			wh = 600
+		} // Fallback
+	}
+	r.lastWindowHeightPx = wh // Store current window height
+	termW := ww               // Use pixel width for termW in calculations
+
+	// Reset scrollable image tracking for this frame.
+	// It will be set if a scrollable image is encountered and drawn.
+	r.scrollableImgTargetH = -1
+	// Don't reset r.imgScrollOffsetY here, preserve it between frames
+
 	grid := buf.GetVisibleGrid()
 	rows := len(grid)
 	cols := 0
@@ -163,68 +210,157 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 			if cell.IsImagePlaceholder {
 				imgKey := buffer.ImageKey{R: y, C: x}
 				log.Printf("Found image placeholder at [%d, %d]", y, x) // LOG 1
-				img := buf.GetImage(imgKey)
-				if img != nil {
-					log.Printf("  -> Retrieved image from buffer: %T, Bounds: %v", img, img.Bounds()) // LOG 2
-					imgTexture, cached := r.imageTextureCache[imgKey]
-					var imgW, imgH int32
+				// Get image and its constraints
+				img, imgID, wConstraint, hConstraint, preserveAspect := buf.GetImage(imgKey)
+
+				if img != nil && imgID > 0 {
+					cacheKey := imageCacheKey{BufKey: imgKey, ImgID: imgID}
+					imgTexture, cached := r.imageTextureCache[cacheKey]
+					var err error // Declare err here to be accessible later
 
 					if !cached {
-						log.Printf("  -> Image texture not cached, creating...") // LOG 3
-						surface, err := imageToSurface(img)
+						log.Printf("   -> Image not in texture cache, creating...") // LOG 3
+						imgBounds := img.Bounds()
+						imgW, imgH := int32(imgBounds.Dx()), int32(imgBounds.Dy())
+						var surface *sdl.Surface
+
+						// Create an SDL surface based on the image type
+						switch imgData := img.(type) {
+						case *image.RGBA:
+							surface, err = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&imgData.Pix[0]), imgW, imgH, 32, int32(imgData.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
+						case *image.NRGBA:
+							rgbaImg := image.NewRGBA(imgBounds)
+							draw.Draw(rgbaImg, imgBounds, imgData, imgBounds.Min, draw.Src)
+							surface, err = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&rgbaImg.Pix[0]), imgW, imgH, 32, int32(rgbaImg.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
+						case *image.Gray:
+							surface, err = sdl.CreateRGBSurfaceWithFormat(0, imgW, imgH, 8, uint32(sdl.PIXELFORMAT_INDEX8))
+							if err == nil {
+								var palette *sdl.Palette
+								palette, err = sdl.AllocPalette(256)
+								if err == nil {
+									paletteColors := make([]sdl.Color, 256)
+									for i := range paletteColors {
+										paletteColors[i] = sdl.Color{R: uint8(i), G: uint8(i), B: uint8(i), A: 255}
+									}
+									palette.SetColors(paletteColors)
+									surface.SetPalette(palette)
+									palette.Free()
+									pixels := surface.Pixels()
+									copy(pixels, imgData.Pix)
+								}
+							}
+						case *image.Paletted:
+							surface, err = sdl.CreateRGBSurfaceWithFormat(0, imgW, imgH, 8, uint32(sdl.PIXELFORMAT_INDEX8))
+							if err == nil {
+								var palette *sdl.Palette
+								palette, err = sdl.AllocPalette(len(imgData.Palette))
+								if err == nil {
+									paletteColors := make([]sdl.Color, len(imgData.Palette))
+									for i, c := range imgData.Palette {
+										r, g, b, a := c.RGBA()
+										paletteColors[i] = sdl.Color{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: uint8(a >> 8)}
+									}
+									palette.SetColors(paletteColors)
+									surface.SetPalette(palette)
+									palette.Free()
+									pixels := surface.Pixels()
+									copy(pixels, imgData.Pix)
+								}
+							}
+						default:
+							log.Printf("   -> Unsupported image type for direct surface creation: %T. Converting to RGBA.", imgData)
+							rgbaImg := image.NewRGBA(imgBounds)
+							draw.Draw(rgbaImg, imgBounds, imgData, imgBounds.Min, draw.Src)
+							surface, err = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&rgbaImg.Pix[0]), imgW, imgH, 32, int32(rgbaImg.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
+						}
+
+						// Now create the texture from the surface (if surface creation was successful)
 						if err != nil {
-							log.Printf("  -> Failed to convert image to surface: %v", err)
+							log.Printf("   -> Failed to create surface from image: %v", err)
+							if surface != nil {
+								surface.Free()
+							}
+						} else if surface == nil {
+							log.Printf("   -> Surface is nil after image conversion attempts.")
 						} else {
-							log.Printf("  -> Converted image to surface: %p", surface) // LOG 4
-							imgTexture, err = r.sdlRenderer.CreateTextureFromSurface(surface)
+							log.Printf("   -> Created surface: %p (Format: %s)", surface, sdl.GetPixelFormatName(uint(surface.Format.Format))) // LOG 4
+							newTexture, texErr := r.renderer.CreateTextureFromSurface(surface)
 							surface.Free()
-							if err != nil {
-								log.Printf("  -> Failed to create texture from image surface: %v", err)
-								imgTexture = nil
+							if texErr != nil {
+								log.Printf("   -> Failed to create texture from image surface: %v", texErr)
 							} else {
-								log.Printf("  -> Created and cached image texture: %p", imgTexture) // LOG 5
-								r.imageTextureCache[imgKey] = imgTexture
+								imgTexture = newTexture // Assign to the outer scope variable
+								r.imageTextureCache[cacheKey] = imgTexture
+								log.Printf("   -> Created and cached image texture: %p (ID: %d)", imgTexture, imgID) // LOG 5
 							}
 						}
 					} else {
-						log.Printf("  -> Found cached image texture: %p", imgTexture) // LOG 6
+						log.Printf("   -> Found cached image texture: %p (ID: %d)", imgTexture, imgID) // LOG 6
 					}
 
+					// Draw the texture if we have one (either cached or newly created)
 					if imgTexture != nil {
-						_, _, imgW, imgH, _ = imgTexture.Query()
-						imgDstRect := sdl.Rect{
-							X: int32(x * r.glyphWidth),
-							Y: int32(y * r.glyphHeight),
-							W: imgW,
-							H: imgH,
-						}
-						log.Printf("  -> Drawing image texture at [%d, %d] W:%d H:%d", imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H) // LOG 7
+						_, _, texW, texH, queryErr := imgTexture.Query()
+						if queryErr != nil {
+							log.Printf("   -> Error querying image texture: %v", queryErr)
+						} else {
+							// Calculate target dimensions based on constraints
+							// termW is now window pixel width
+							targetW, targetH := r.calculateTargetDimensions(
+								wConstraint, hConstraint, preserveAspect,
+								texW, texH, termW, r.lastWindowHeightPx)
 
-						errCopy := r.sdlRenderer.Copy(imgTexture, nil, &imgDstRect)
-						if errCopy != nil {
-							log.Printf("  -> Error copying image texture: %v", errCopy) // LOG 8
-						}
+							// Store details if this image is potentially scrollable
+							if targetH > r.lastWindowHeightPx {
+								r.scrollableImgTargetH = targetH
+								r.scrollableImgAnchorY = int32(y * r.cellHeight)
+								// Ensure scroll offset is still valid
+								maxScroll := targetH - r.lastWindowHeightPx
+								r.imgScrollOffsetY = max(0, min(r.imgScrollOffsetY, maxScroll))
+							}
 
-						// Mark cells covered by this image to be skipped
-						colsToSkip := (imgW + int32(r.glyphWidth) - 1) / int32(r.glyphWidth) // Round up
-						rowsToSkip := (imgH + int32(r.glyphHeight) - 1) / int32(r.glyphHeight)
-						for rowOffset := 0; rowOffset < int(rowsToSkip); rowOffset++ {
-							currentSkipRow := y + rowOffset
-							skipEndCol := x + int(colsToSkip)
-							if existingSkip, ok := imageSkipUntil[currentSkipRow]; ok {
-								if skipEndCol > existingSkip { // Extend skip if this image goes further
+							// Destination rect: position includes scroll offset, size is calculated target
+							imgDstRect := sdl.Rect{
+								X: int32(x * r.cellWidth),
+								Y: int32(y*r.cellHeight) - r.imgScrollOffsetY, // Apply scroll offset
+								W: targetW,                                    // Use calculated width
+								H: targetH,                                    // Use calculated height
+							}
+							log.Printf("   -> Drawing image texture at [%d, %d] W:%d H:%d (ScrollY: %d)",
+								imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H, r.imgScrollOffsetY)
+
+							// Set clip rect for this draw call to window bounds
+							clipRect := sdl.Rect{X: 0, Y: 0, W: ww, H: wh}
+							r.renderer.SetClipRect(&clipRect)
+
+							errCopy := r.renderer.Copy(imgTexture, nil, &imgDstRect)
+
+							// Reset clip rect
+							r.renderer.SetClipRect(nil)
+
+							if errCopy != nil {
+								log.Printf("   -> Error copying image texture: %v", errCopy) // LOG 8
+							}
+
+							// Mark this cell as skipped for text rendering
+							colsToSkip := (targetW + int32(r.cellWidth) - 1) / int32(r.cellWidth) // Round up based on target size
+							rowsToSkip := (targetH + int32(r.cellHeight) - 1) / int32(r.cellHeight)
+							for rowOffset := 0; rowOffset < int(rowsToSkip); rowOffset++ {
+								currentSkipRow := y + rowOffset
+								skipEndCol := x + int(colsToSkip)
+								if existingSkip, ok := imageSkipUntil[currentSkipRow]; ok {
+									if skipEndCol > existingSkip { // Extend skip if this image goes further
+										imageSkipUntil[currentSkipRow] = skipEndCol
+									}
+								} else {
 									imageSkipUntil[currentSkipRow] = skipEndCol
 								}
-							} else {
-								imageSkipUntil[currentSkipRow] = skipEndCol
 							}
+							// Restart inner loop to respect the new skip calculation immediately
+							skipUntilCol = imageSkipUntil[y]
+							rowHasSkip = true
+							continue
 						}
-						// Restart inner loop to respect the new skip calculation immediately
-						skipUntilCol = imageSkipUntil[y]
-						rowHasSkip = true
-						continue
-					} else {
-						log.Printf("  -> Image texture is nil, cannot draw.") // LOG 9
 					}
 				} else {
 					log.Printf("  -> Image retrieved from buffer is nil") // LOG 10
@@ -251,8 +387,8 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				W: int32(r.glyphWidth),
 				H: int32(r.glyphHeight),
 			}
-			r.sdlRenderer.SetDrawColor(bgColorSDL.R, bgColorSDL.G, bgColorSDL.B, bgColorSDL.A)
-			r.sdlRenderer.FillRect(&bgRect)
+			r.renderer.SetDrawColor(bgColorSDL.R, bgColorSDL.G, bgColorSDL.B, bgColorSDL.A)
+			r.renderer.FillRect(&bgRect)
 
 			// --- Draw Character (if not blank) using Cache ---
 			if cell.Char != ' ' {
@@ -276,7 +412,7 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 						log.Printf("  -> Failed to render char '%c' (%d): %v", cell.Char, cell.Char, err)
 						continue
 					}
-					texture, err = r.sdlRenderer.CreateTextureFromSurface(surface)
+					texture, err = r.renderer.CreateTextureFromSurface(surface)
 					if err != nil {
 						surface.Free()
 						log.Printf("Failed to create texture for char '%c': %v", cell.Char, err)
@@ -302,13 +438,13 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 					H: int32(r.glyphHeight), // Use fixed grid height
 				}
 				// Use SrcRect=nil to copy whole texture, DstRect defines position and size
-				r.sdlRenderer.Copy(texture, nil, &dstRect)
+				r.renderer.Copy(texture, nil, &dstRect)
 
 				// --- Draw Underline ---
 				if cell.Underline {
 					lineY := int32((y+1)*r.glyphHeight - 1) // Bottom of the cell
-					r.sdlRenderer.SetDrawColor(fgColorSDL.R, fgColorSDL.G, fgColorSDL.B, fgColorSDL.A)
-					r.sdlRenderer.DrawLine(dstRect.X, lineY, dstRect.X+dstRect.W, lineY)
+					r.renderer.SetDrawColor(fgColorSDL.R, fgColorSDL.G, fgColorSDL.B, fgColorSDL.A)
+					r.renderer.DrawLine(dstRect.X, lineY, dstRect.X+dstRect.W, lineY)
 				}
 
 				// TODO: Handle Bold (maybe render again slightly offset, or use bold font variant if loaded)
@@ -329,8 +465,8 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				H: int32(r.glyphHeight),
 			}
 			cursorColor := sdl.Color{R: 255, G: 255, B: 255, A: 255}
-			r.sdlRenderer.SetDrawColor(cursorColor.R, cursorColor.G, cursorColor.B, cursorColor.A)
-			r.sdlRenderer.FillRect(&cursorRect)
+			r.renderer.SetDrawColor(cursorColor.R, cursorColor.G, cursorColor.B, cursorColor.A)
+			r.renderer.FillRect(&cursorRect)
 		}
 	}
 
@@ -421,3 +557,110 @@ func mapBufferColorToSDL(value int, colorType string) sdl.Color {
 
 // ClearScreen is no longer needed here as SDL clearing is handled in main loop.
 // func (r *SDLRenderer) ClearScreen() error { ... }
+
+// calculateTargetDimensions determines the final pixel width and height based on constraints.
+// NOTE: Temporarily simplified to ignore constraints and fit width, preserving aspect.
+func (r *SDLRenderer) calculateTargetDimensions(wConstraint, hConstraint string, preserveAspect bool, nativeW, nativeH, termW, termH int32) (targetW, targetH int32) {
+	log.Printf("[CalcDims] Input: WConstraint=%s, HConstraint=%s, Preserve=%v, Native=%dx%d, Term=%dx%d",
+		wConstraint, hConstraint, preserveAspect, nativeW, nativeH, termW, termH)
+
+	// --- Simplified Logic ---
+	if nativeW <= 0 || nativeH <= 0 {
+		log.Printf("[CalcDims] Invalid native dimensions, returning 1x1.")
+		return 1, 1 // Cannot calculate aspect ratio
+	}
+
+	// 1. Start with native dimensions
+	targetW = nativeW
+	targetH = nativeH
+	log.Printf("[CalcDims] Step 1 (Native): %dx%d", targetW, targetH)
+
+	nativeAspect := float64(nativeW) / float64(nativeH)
+
+	// 2. Clamp width to terminal width
+	originalTargetW := targetW
+	targetW = max(1, min(targetW, termW))
+	log.Printf("[CalcDims] Step 2 (Clamp Width): %dx%d (TermW: %d)", targetW, targetH, termW)
+
+	// 3. If width was clamped, adjust height to preserve aspect ratio
+	if targetW != originalTargetW {
+		targetH = int32(float64(targetW) / nativeAspect)
+		log.Printf("[CalcDims] Step 3 (Adjust Height for Aspect): %dx%d (NativeAspect: %f)", targetW, targetH, nativeAspect)
+	}
+
+	// 4. Ensure height is at least 1
+	targetH = max(1, targetH)
+	log.Printf("[CalcDims] Step 4 (Ensure Min Height): %dx%d", targetW, targetH)
+
+	// --- Original Logic (commented out for debugging) ---
+	/*
+		passeConstraint := func(constraint string, nativeDim int32, cellDim int, termDimPx int32) int32 {
+			// ... (previous parsing logic) ...
+		}
+
+		initialW := parseConstraint(wConstraint, nativeW, r.cellWidth, termW)
+		initialH := parseConstraint(hConstraint, nativeH, r.cellHeight, termH)
+
+		if preserveAspect && nativeW > 0 && nativeH > 0 {
+			// ... (previous aspect logic) ...
+		} else {
+			// ... (previous non-aspect logic) ...
+		}
+
+		widthBeforeClamp := targetW
+		targetW = max(1, min(targetW, termW))
+		if preserveAspect && nativeW > 0 && nativeH > 0 && targetW != widthBeforeClamp {
+			targetH = int32(float64(targetW) / (float64(nativeW) / float64(nativeH)))
+		}
+		if !preserveAspect {
+			targetH = max(1, min(targetH, termH))
+		} else {
+			targetH = max(1, targetH)
+		}
+	*/
+
+	log.Printf("[CalcDims] Final Output: %dx%d", targetW, targetH)
+	return targetW, targetH
+}
+
+// Helper functions min/max for int32
+func min(a, b int32) int32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int32) int32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// ScrollImage attempts to scroll the last rendered tall image.
+// deltaY is the number of scroll *lines* (positive for up, negative for down).
+// Returns true if image scrolling occurred, false otherwise.
+func (r *SDLRenderer) ScrollImage(deltaY int) bool {
+	// Check if we have a scrollable image recorded from the last draw
+	if r.scrollableImgTargetH <= r.lastWindowHeightPx || r.lastWindowHeightPx <= 0 {
+		r.scrollableImgTargetH = -1 // Reset if not scrollable
+		return false                // Not scrollable or window height unknown
+	}
+
+	maxScroll := r.scrollableImgTargetH - r.lastWindowHeightPx
+	deltaPx := int32(deltaY * r.cellHeight) // Convert lines to pixels
+
+	newOffsetY := r.imgScrollOffsetY - deltaPx // Subtract delta because positive deltaY means scroll UP (show earlier part of image)
+
+	// Clamp the new offset
+	clampedOffsetY := max(0, min(newOffsetY, maxScroll))
+
+	if clampedOffsetY != r.imgScrollOffsetY {
+		r.imgScrollOffsetY = clampedOffsetY
+		log.Printf("[ScrollImage] Scrolled. OffsetY: %d (Max: %d)", r.imgScrollOffsetY, maxScroll)
+		return true // Scrolling happened
+	}
+
+	return false // No change in scroll offset
+}

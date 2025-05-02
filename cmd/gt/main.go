@@ -193,6 +193,8 @@ func main() {
 						} else {
 							// Not Ctrl modifier, handle other keys
 							switch sym {
+							case sdl.K_ESCAPE:
+								seq = []byte("\x1b") // Send ASCII ESC byte
 							case sdl.K_RETURN, sdl.K_RETURN2:
 								seq = []byte("\r")
 							case sdl.K_BACKSPACE:
@@ -227,13 +229,25 @@ func main() {
 				case *sdl.MouseWheelEvent:
 					// Positive Y is scrolling away (Scroll Up)
 					// Negative Y is scrolling towards (Scroll Down)
-					// We'll scroll 3 lines per wheel tick for now
-					const scrollAmount = 3
-					if ev.Y > 0 {
-						outBuffer.ScrollUp(scrollAmount)
-						needsRedraw = true
-					} else if ev.Y < 0 {
-						outBuffer.ScrollDown(scrollAmount)
+					const scrollAmount = 3 // Lines per tick
+					var scrolled bool
+
+					// Try scrolling the image first (ScrollImage expects positive delta for UP)
+					scrolled = termRenderer.ScrollImage(int(ev.Y))
+
+					// If image wasn't scrolled, scroll the buffer
+					if !scrolled {
+						if ev.Y > 0 {
+							outBuffer.ScrollUp(scrollAmount)
+							scrolled = true // Mark that buffer scrolling happened
+						} else if ev.Y < 0 {
+							outBuffer.ScrollDown(scrollAmount)
+							scrolled = true // Mark that buffer scrolling happened
+						}
+					}
+
+					// Request redraw if any scrolling occurred
+					if scrolled {
 						needsRedraw = true
 					}
 					// ev.X could be used for horizontal scrolling if needed
