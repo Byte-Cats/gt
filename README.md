@@ -53,6 +53,31 @@ python contrib/load_image.py /path/to/your/image.png
 
 This script reads the image file, encodes it, and prints the necessary escape sequence.
 
+### Configuration
+
+`gt` can be configured via a TOML file located at `~/.config/gt/theme.toml`.
+
+A default configuration file (`theme.default.toml`) is included in the project root. Copy this file to `~/.config/gt/theme.toml` and modify it to change settings like:
+
+*   Font path and size
+*   Terminal colors (foreground, background, cursor, 16 ANSI colors)
+
+If the configuration file is not found or is invalid, `gt` will use built-in default values.
+
+**Applying Themes:**
+
+To make changing themes easier, a helper script is provided:
+
+```bash
+# Make sure it's executable
+chmod +x contrib/set_gt_theme.sh
+
+# Apply a theme file (e.g., one you downloaded or created)
+./contrib/set_gt_theme.sh /path/to/some_other_theme.toml
+```
+
+This script copies the specified theme file to `~/.config/gt/theme.toml`. Restart `gt` after applying a new theme.
+
 ### Build from source
 ```bash
 go mod init && go mod tidy && go build

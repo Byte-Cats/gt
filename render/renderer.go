@@ -181,6 +181,17 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	r.lastWindowHeightPx = wh // Store current window height
 	termW := ww               // Use pixel width for termW in calculations
 
+	// Draw background (Solid or Gradient)
+	if r.theme.Gradient.Enabled {
+		err = r.drawGradientBackground(ww, wh)
+		if err != nil {
+			log.Printf("Error drawing gradient background: %v. Falling back to solid.", err)
+			r.drawSolidBackground(ww, wh) // Fallback to solid on error
+		}
+	} else {
+		r.drawSolidBackground(ww, wh)
+	}
+
 	// Reset scrollable image tracking for this frame.
 	// It will be set if a scrollable image is encountered and drawn.
 	r.scrollableImgTargetH = -1
@@ -195,15 +206,6 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 	// Keep track of areas covered by images in the current row
 	imageSkipUntil := make(map[int]int) // map[row] => skip rendering text cells until col X
-
-	// Clear with the theme background color
-	bgColor, err := parseHexColor(r.theme.Colors.Background)
-	if err != nil {
-		log.Printf("Warning: Invalid background color in theme '%s': %v. Using black.", r.theme.Colors.Background, err)
-		bgColor = sdl.Color{R: 0, G: 0, B: 0, A: 255}
-	}
-	r.renderer.SetDrawColor(bgColor.R, bgColor.G, bgColor.B, bgColor.A)
-	r.renderer.Clear()
 
 	for y := 0; y < rows; y++ {
 		skipUntilCol, rowHasSkip := imageSkipUntil[y]
@@ -491,6 +493,58 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	}
 
 	return nil
+}
+
+// drawSolidBackground clears the screen with a solid color from the theme.
+func (r *SDLRenderer) drawSolidBackground(w, h int32) {
+	bgColor, err := parseHexColor(r.theme.Colors.Background)
+	if err != nil {
+		log.Printf("Warning: Invalid background color in theme '%s': %v. Using black.", r.theme.Colors.Background, err)
+		bgColor = sdl.Color{R: 0, G: 0, B: 0, A: 255}
+	}
+	r.renderer.SetDrawColor(bgColor.R, bgColor.G, bgColor.B, bgColor.A)
+	r.renderer.Clear()
+}
+
+// drawGradientBackground draws a gradient background based on theme settings.
+func (r *SDLRenderer) drawGradientBackground(w, h int32) error {
+	startColor, err1 := parseHexColor(r.theme.Gradient.StartColor)
+	endColor, err2 := parseHexColor(r.theme.Gradient.EndColor)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("invalid gradient colors: start=%v, end=%v", err1, err2)
+	}
+
+	if r.theme.Gradient.Direction == "horizontal" {
+		for x := int32(0); x < w; x++ {
+			t := float32(x) / float32(w-1) // Interpolation factor (0.0 to 1.0)
+			col := interpolateColor(startColor, endColor, t)
+			r.renderer.SetDrawColor(col.R, col.G, col.B, col.A)
+			r.renderer.DrawLine(x, 0, x, h-1)
+		}
+	} else { // Default to vertical
+		for y := int32(0); y < h; y++ {
+			t := float32(y) / float32(h-1) // Interpolation factor (0.0 to 1.0)
+			col := interpolateColor(startColor, endColor, t)
+			r.renderer.SetDrawColor(col.R, col.G, col.B, col.A)
+			r.renderer.DrawLine(0, y, w-1, y)
+		}
+	}
+	return nil
+}
+
+// interpolateColor linearly interpolates between two SDL colors.
+func interpolateColor(c1, c2 sdl.Color, t float32) sdl.Color {
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	r := float32(c1.R) + t*(float32(c2.R)-float32(c1.R))
+	g := float32(c1.G) + t*(float32(c2.G)-float32(c1.G))
+	b := float32(c1.B) + t*(float32(c2.B)-float32(c1.B))
+	a := float32(c1.A) + t*(float32(c2.A)-float32(c1.A))
+	return sdl.Color{R: uint8(r), G: uint8(g), B: uint8(b), A: uint8(a)}
 }
 
 // imageToSurface converts image.Image to *sdl.Surface (needs careful pixel format handling)

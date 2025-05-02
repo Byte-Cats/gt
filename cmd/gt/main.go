@@ -20,15 +20,20 @@ import (
 	// "golang.org/x/term" // No longer needed
 )
 
+/* // Constants moved to theme config
 const (
 	defaultWidth  = 800
 	defaultHeight = 600
 	fontPath      = "/System/Library/Fonts/Menlo.ttc" // Using Menlo found on macOS
 	fontSize      = 14
 )
+*/
 
 func main() {
 	runtime.LockOSThread() // SDL requires the main loop on the main thread
+
+	// --- Load Theme ---
+	theme := config.LoadTheme()
 
 	// --- Initialize SDL ---
 	if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
@@ -41,20 +46,31 @@ func main() {
 	}
 	defer ttf.Quit()
 
-	font, err := ttf.OpenFont(fontPath, fontSize)
+	// --- Load Fonts ---
+	log.Printf("Attempting to load font: %s (Size: %d)", theme.FontPath, theme.FontSize)
+	font, err := ttf.OpenFont(theme.FontPath, theme.FontSize)
 	if err != nil {
-		log.Fatalf("Failed to open font %s: %v", fontPath, err)
+		log.Printf("Warning: Failed to open configured font %s: %v", theme.FontPath, err)
+		// Fallback 1: Try default Menlo
+		defaultFontPath := "/System/Library/Fonts/Menlo.ttc"
+		log.Printf("Attempting fallback font: %s", defaultFontPath)
+		font, err = ttf.OpenFont(defaultFontPath, theme.FontSize)
+		if err != nil {
+			// Fallback 2: Give up?
+			log.Fatalf("Failed to open configured font and fallback font %s: %v", defaultFontPath, err)
+		}
+		theme.FontPath = defaultFontPath // Update theme if we used fallback
 	}
 	defer font.Close()
 
-	// Attempt to load bold font variant from the same collection (index 1 often bold)
+	// Attempt to load bold font variant from the same file as the primary font
 	var boldFont *ttf.Font
-	boldFont, err = ttf.OpenFontIndex(fontPath, fontSize, 1)
+	boldFont, err = ttf.OpenFontIndex(theme.FontPath, theme.FontSize, 1) // Use theme.FontPath
 	if err != nil {
-		log.Printf("Warning: Could not load bold font variant from %s (index 1): %v", fontPath, err)
+		log.Printf("Warning: Could not load bold font variant from %s (index 1): %v", theme.FontPath, err)
 		boldFont = nil // Proceed without bold variant
 	} else {
-		log.Printf("Loaded bold font variant from %s (index 1)", fontPath)
+		log.Printf("Loaded bold font variant from %s (index 1)", theme.FontPath)
 		defer boldFont.Close()
 	}
 
@@ -105,12 +121,7 @@ func main() {
 	// termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont)
 	// defer termRenderer.Destroy() // Defer cleanup of the glyph cache
 
-	// Load the theme
-	theme := config.LoadTheme()
-	// Pass theme to NewSDLRenderer (next step)
-	// _ = theme // Avoid unused variable error for now
-
-	// Create renderer with theme
+	// Pass both fonts and theme to the renderer
 	termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont, theme)
 	defer termRenderer.Destroy()
 

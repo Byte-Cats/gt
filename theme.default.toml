@@ -1,0 +1,35 @@
+# Naruto Inspired GT Theme
+# Copy this file to ~/.config/gt/theme.toml and modify it to customize.
+
+font_path = "/System/Library/Fonts/Menlo.ttc" # Keep Menlo for now
+font_size = 15
+
+[colors]
+foreground = "#f0e6d8" # Light Sand/Off-white
+background = "#0b0d17" # Very Dark Blue/Black (Fallback)
+cursor = "#ff8c00"     # Naruto Orange
+
+black = "#1c1c1c"   # Near Black
+red = "#e04a4a"     # Sharingan Red / Softer Red
+green = "#86b73b"   # Leaf Green
+yellow = "#ffcc00"  # Gold/Yellow (Rasengan?)
+blue = "#4a86e8"    # Headband Blue
+magenta = "#aa77dd" # Purple (Rinnegan?)
+cyan = "#67cdf0"    # Sky Blue
+white = "#e0e0d0"   # Off-white/Light Gray
+
+bright_black = "#555555"   # Gray
+bright_red = "#ff6666"     # Brighter Red
+bright_green = "#a6d96a"   # Brighter Leaf Green
+bright_yellow = "#ffee55"  # Brighter Gold
+bright_blue = "#7aaeff"    # Brighter Headband Blue
+bright_magenta = "#c799ff" # Brighter Purple
+bright_cyan = "#87ddff"    # Brighter Sky Blue
+bright_white = "#ffffff"   # Pure White
+
+# Example: Gradient background (NOT YET IMPLEMENTED)
+[gradient]
+enabled = true
+start_color = "#1a2a4f" # Dark Midnight Blue (Night Sky)
+end_color = "#0b0d17"   # Very Dark Blue/Black (Deep Night)
+direction = "vertical"

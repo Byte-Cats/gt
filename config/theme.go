@@ -10,7 +10,10 @@ import (
 
 // Theme holds the color configuration for the terminal.
 type Theme struct {
-	Colors ThemeColors `toml:"colors"`
+	FontPath string      `toml:"font_path,omitempty"`
+	FontSize int         `toml:"font_size,omitempty"`
+	Colors   ThemeColors `toml:"colors"`
+	Gradient Gradient    `toml:"gradient,omitempty"`
 	// TODO: Add gradient settings later
 }
 
@@ -39,9 +42,19 @@ type ThemeColors struct {
 	BrightWhite   string `toml:"bright_white"`
 }
 
+// Gradient defines the background gradient settings.
+type Gradient struct {
+	Enabled    bool   `toml:"enabled"`
+	StartColor string `toml:"start_color"`
+	EndColor   string `toml:"end_color"`
+	Direction  string `toml:"direction"` // "vertical" or "horizontal"
+}
+
 // DefaultTheme provides sensible default colors.
 func DefaultTheme() Theme {
 	return Theme{
+		FontPath: "/System/Library/Fonts/Menlo.ttc", // Sensible default for macOS
+		FontSize: 14,
 		Colors: ThemeColors{
 			Foreground:    "#cccccc", // Light gray
 			Background:    "#1e1e1e", // Dark gray
@@ -62,6 +75,12 @@ func DefaultTheme() Theme {
 			BrightMagenta: "#d670d6",
 			BrightCyan:    "#29b8db",
 			BrightWhite:   "#ffffff",
+		},
+		Gradient: Gradient{
+			Enabled:    false,
+			StartColor: "#303030",
+			EndColor:   "#101010",
+			Direction:  "vertical",
 		},
 	}
 }
@@ -85,12 +104,25 @@ func LoadTheme() Theme {
 		return theme
 	}
 
-	if _, err := toml.DecodeFile(configPath, &theme); err != nil {
+	// Keep existing theme colors if TOML only specifies font
+	loadedTheme := DefaultTheme() // Use defaults as base
+	if _, err := toml.DecodeFile(configPath, &loadedTheme); err != nil {
 		log.Printf("Warning: Failed to decode theme file %s: %v. Using default theme.", configPath, err)
 		return DefaultTheme() // Return defaults again on error
 	}
 
-	log.Printf("Loaded theme from %s", configPath)
+	// Override font path/size only if they were actually present in the TOML
+	if loadedTheme.FontPath != "" {
+		theme.FontPath = loadedTheme.FontPath
+	}
+	if loadedTheme.FontSize > 0 {
+		theme.FontSize = loadedTheme.FontSize
+	}
+	// Colors and Gradient are directly overridden by DecodeFile
+	theme.Colors = loadedTheme.Colors
+	theme.Gradient = loadedTheme.Gradient // Load gradient settings
+
+	log.Printf("Loaded theme from %s (Font: %s, Size: %d)", configPath, theme.FontPath, theme.FontSize)
 	// TODO: Validate loaded color strings?
 	return theme
 }
