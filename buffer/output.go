@@ -287,6 +287,7 @@ func (o *Output) putChar(r rune) {
 
 	// Check for line wrap *before* placing character, considering its width
 	if o.cursorX+rWidth > o.cols {
+		log.Printf("[putChar] Wrapping line. CursorX=%d, RuneWidth=%d, Cols=%d", o.cursorX, rWidth, o.cols) // DEBUG LOG
 		o.cursorX = 0
 		o.cursorY++
 		if o.cursorY >= o.rows {
@@ -455,16 +456,19 @@ func (o *Output) dispatchCsi(cmd rune) {
 		o.cursorX -= max(1, n)
 		o.clampCursor()
 	case 'H', 'f': // CUP - Cursor Position / HVP
-		row := o.getParam(1, 1)   // Default row 1
-		col := o.getParam(2, 1)   // Default col 1
-		o.cursorY = max(0, row-1) // Convert to 0-based
-		o.cursorX = max(0, col-1) // Convert to 0-based
+		row := o.getParam(1, 1)                                                                     // Default row 1
+		col := o.getParam(2, 1)                                                                     // Default col 1
+		log.Printf("[CSI H/f] CUP/HVP Target: row=%d, col=%d (Raw Params: %v)", row, col, o.params) // DEBUG LOG
+		o.cursorY = max(0, row-1)                                                                   // Convert to 0-based
+		o.cursorX = max(0, col-1)                                                                   // Convert to 0-based
 		o.clampCursor()
 	case 'J': // ED - Erase in Display
-		mode := o.getParam(1, 0) // Default 0
+		mode := o.getParam(1, 0)                                           // Default 0
+		log.Printf("[CSI J] ED Mode: %d (Raw Params: %v)", mode, o.params) // DEBUG LOG
 		o.eraseInDisplay(mode)
 	case 'K': // EL - Erase in Line
-		mode := o.getParam(1, 0) // Default 0
+		mode := o.getParam(1, 0)                                           // Default 0
+		log.Printf("[CSI K] EL Mode: %d (Raw Params: %v)", mode, o.params) // DEBUG LOG
 		o.eraseInLine(mode)
 	case 'm': // SGR - Select Graphic Rendition
 		o.handleSgr()
