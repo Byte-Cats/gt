@@ -607,7 +607,9 @@ func (o *Output) GetVisibleGrid() [][]Cell {
 		return o.grid
 	} else {
 		// Viewing scrollback
-		scrollbackStartIdx := (o.scrollbackHead - o.scrollbackLines + o.viewOffset + o.maxScrollback) % o.maxScrollback
+		// Calculate the index of the topmost visible line in the scrollback buffer.
+		// This is the Nth most recent line, where N = viewOffset.
+		scrollbackStartIdx := (o.scrollbackHead - o.viewOffset + o.maxScrollback) % o.maxScrollback
 
 		scrollRowsToShow := min(o.rows, o.viewOffset)
 		gridRowsToShow := o.rows - scrollRowsToShow
