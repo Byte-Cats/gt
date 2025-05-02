@@ -212,7 +212,20 @@ func main() {
 							// log.Printf("Unhandled Key Press: Scancode=%d, Keycode=%d, Mod=%d", ev.Keysym.Scancode, ev.Keysym.Sym, ev.Keysym.Mod)
 						}
 					}
-					// TODO: Handle Mouse events? (Scrolling, Selection)
+				// TODO: Handle Mouse events? (Scrolling, Selection)
+				case *sdl.MouseWheelEvent:
+					// Positive Y is scrolling away (Scroll Up)
+					// Negative Y is scrolling towards (Scroll Down)
+					// We'll scroll 3 lines per wheel tick for now
+					const scrollAmount = 3
+					if ev.Y > 0 {
+						outBuffer.ScrollUp(scrollAmount)
+						needsRedraw = true
+					} else if ev.Y < 0 {
+						outBuffer.ScrollDown(scrollAmount)
+						needsRedraw = true
+					}
+					// ev.X could be used for horizontal scrolling if needed
 				}
 			}
 		}

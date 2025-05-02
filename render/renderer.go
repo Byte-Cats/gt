@@ -8,15 +8,85 @@ import (
 	"github.com/veandco/go-sdl2/ttf"
 )
 
+// Extended 256 color palette (standard xterm)
+// Source: https://en.wikipedia.org/wiki/ANSI_escape_code#8-bit
+var xterm256Palette = []sdl.Color{
+	// Standard colors (0-7)
+	{0, 0, 0, 255}, {128, 0, 0, 255}, {0, 128, 0, 255}, {128, 128, 0, 255},
+	{0, 0, 128, 255}, {128, 0, 128, 255}, {0, 128, 128, 255}, {192, 192, 192, 255},
+	// Bright colors (8-15)
+	{128, 128, 128, 255}, {255, 0, 0, 255}, {0, 255, 0, 255}, {255, 255, 0, 255},
+	{0, 0, 255, 255}, {255, 0, 255, 255}, {0, 255, 255, 255}, {255, 255, 255, 255},
+	// Color cube (16-231) 6x6x6
+	// Levels: 0, 95, 135, 175, 215, 255
+	{0, 0, 0, 255}, {0, 0, 95, 255}, {0, 0, 135, 255}, {0, 0, 175, 255}, {0, 0, 215, 255}, {0, 0, 255, 255},
+	{0, 95, 0, 255}, {0, 95, 95, 255}, {0, 95, 135, 255}, {0, 95, 175, 255}, {0, 95, 215, 255}, {0, 95, 255, 255},
+	{0, 135, 0, 255}, {0, 135, 95, 255}, {0, 135, 135, 255}, {0, 135, 175, 255}, {0, 135, 215, 255}, {0, 135, 255, 255},
+	{0, 175, 0, 255}, {0, 175, 95, 255}, {0, 175, 135, 255}, {0, 175, 175, 255}, {0, 175, 215, 255}, {0, 175, 255, 255},
+	{0, 215, 0, 255}, {0, 215, 95, 255}, {0, 215, 135, 255}, {0, 215, 175, 255}, {0, 215, 215, 255}, {0, 215, 255, 255},
+	{0, 255, 0, 255}, {0, 255, 95, 255}, {0, 255, 135, 255}, {0, 255, 175, 255}, {0, 255, 215, 255}, {0, 255, 255, 255},
+	{95, 0, 0, 255}, {95, 0, 95, 255}, {95, 0, 135, 255}, {95, 0, 175, 255}, {95, 0, 215, 255}, {95, 0, 255, 255},
+	{95, 95, 0, 255}, {95, 95, 95, 255}, {95, 95, 135, 255}, {95, 95, 175, 255}, {95, 95, 215, 255}, {95, 95, 255, 255},
+	{95, 135, 0, 255}, {95, 135, 95, 255}, {95, 135, 135, 255}, {95, 135, 175, 255}, {95, 135, 215, 255}, {95, 135, 255, 255},
+	{95, 175, 0, 255}, {95, 175, 95, 255}, {95, 175, 135, 255}, {95, 175, 175, 255}, {95, 175, 215, 255}, {95, 175, 255, 255},
+	{95, 215, 0, 255}, {95, 215, 95, 255}, {95, 215, 135, 255}, {95, 215, 175, 255}, {95, 215, 215, 255}, {95, 215, 255, 255},
+	{95, 255, 0, 255}, {95, 255, 95, 255}, {95, 255, 135, 255}, {95, 255, 175, 255}, {95, 255, 215, 255}, {95, 255, 255, 255},
+	{135, 0, 0, 255}, {135, 0, 95, 255}, {135, 0, 135, 255}, {135, 0, 175, 255}, {135, 0, 215, 255}, {135, 0, 255, 255},
+	{135, 95, 0, 255}, {135, 95, 95, 255}, {135, 95, 135, 255}, {135, 95, 175, 255}, {135, 95, 215, 255}, {135, 95, 255, 255},
+	{135, 135, 0, 255}, {135, 135, 95, 255}, {135, 135, 135, 255}, {135, 135, 175, 255}, {135, 135, 215, 255}, {135, 135, 255, 255},
+	{135, 175, 0, 255}, {135, 175, 95, 255}, {135, 175, 135, 255}, {135, 175, 175, 255}, {135, 175, 215, 255}, {135, 175, 255, 255},
+	{135, 215, 0, 255}, {135, 215, 95, 255}, {135, 215, 135, 255}, {135, 215, 175, 255}, {135, 215, 215, 255}, {135, 215, 255, 255},
+	{135, 255, 0, 255}, {135, 255, 95, 255}, {135, 255, 135, 255}, {135, 255, 175, 255}, {135, 255, 215, 255}, {135, 255, 255, 255},
+	{175, 0, 0, 255}, {175, 0, 95, 255}, {175, 0, 135, 255}, {175, 0, 175, 255}, {175, 0, 215, 255}, {175, 0, 255, 255},
+	{175, 95, 0, 255}, {175, 95, 95, 255}, {175, 95, 135, 255}, {175, 95, 175, 255}, {175, 95, 215, 255}, {175, 95, 255, 255},
+	{175, 135, 0, 255}, {175, 135, 95, 255}, {175, 135, 135, 255}, {175, 135, 175, 255}, {175, 135, 215, 255}, {175, 135, 255, 255},
+	{175, 175, 0, 255}, {175, 175, 95, 255}, {175, 175, 135, 255}, {175, 175, 175, 255}, {175, 175, 215, 255}, {175, 175, 255, 255},
+	{175, 215, 0, 255}, {175, 215, 95, 255}, {175, 215, 135, 255}, {175, 215, 175, 255}, {175, 215, 215, 255}, {175, 215, 255, 255},
+	{175, 255, 0, 255}, {175, 255, 95, 255}, {175, 255, 135, 255}, {175, 255, 175, 255}, {175, 255, 215, 255}, {175, 255, 255, 255},
+	{215, 0, 0, 255}, {215, 0, 95, 255}, {215, 0, 135, 255}, {215, 0, 175, 255}, {215, 0, 215, 255}, {215, 0, 255, 255},
+	{215, 95, 0, 255}, {215, 95, 95, 255}, {215, 95, 135, 255}, {215, 95, 175, 255}, {215, 95, 215, 255}, {215, 95, 255, 255},
+	{215, 135, 0, 255}, {215, 135, 95, 255}, {215, 135, 135, 255}, {215, 135, 175, 255}, {215, 135, 215, 255}, {215, 135, 255, 255},
+	{215, 175, 0, 255}, {215, 175, 95, 255}, {215, 175, 135, 255}, {215, 175, 175, 255}, {215, 175, 215, 255}, {215, 175, 255, 255},
+	{215, 215, 0, 255}, {215, 215, 95, 255}, {215, 215, 135, 255}, {215, 215, 175, 255}, {215, 215, 215, 255}, {215, 215, 255, 255},
+	{215, 255, 0, 255}, {215, 255, 95, 255}, {215, 255, 135, 255}, {215, 255, 175, 255}, {215, 255, 215, 255}, {215, 255, 255, 255},
+	{255, 0, 0, 255}, {255, 0, 95, 255}, {255, 0, 135, 255}, {255, 0, 175, 255}, {255, 0, 215, 255}, {255, 0, 255, 255},
+	{255, 95, 0, 255}, {255, 95, 95, 255}, {255, 95, 135, 255}, {255, 95, 175, 255}, {255, 95, 215, 255}, {255, 95, 255, 255},
+	{255, 135, 0, 255}, {255, 135, 95, 255}, {255, 135, 135, 255}, {255, 135, 175, 255}, {255, 135, 215, 255}, {255, 135, 255, 255},
+	{255, 175, 0, 255}, {255, 175, 95, 255}, {255, 175, 135, 255}, {255, 175, 175, 255}, {255, 175, 215, 255}, {255, 175, 255, 255},
+	{255, 215, 0, 255}, {255, 215, 95, 255}, {255, 215, 135, 255}, {255, 215, 175, 255}, {255, 215, 215, 255}, {255, 215, 255, 255},
+	{255, 255, 0, 255}, {255, 255, 95, 255}, {255, 255, 135, 255}, {255, 255, 175, 255}, {255, 255, 215, 255}, {255, 255, 255, 255},
+	// Grayscale ramp (232-255)
+	{8, 8, 8, 255}, {18, 18, 18, 255}, {28, 28, 28, 255}, {38, 38, 38, 255}, {48, 48, 48, 255}, {58, 58, 58, 255},
+	{68, 68, 68, 255}, {78, 78, 78, 255}, {88, 88, 88, 255}, {98, 98, 98, 255}, {108, 108, 108, 255}, {118, 118, 118, 255},
+	{128, 128, 128, 255}, {138, 138, 138, 255}, {148, 148, 148, 255}, {158, 158, 158, 255}, {168, 168, 168, 255}, {178, 178, 178, 255},
+	{188, 188, 188, 255}, {198, 198, 198, 255}, {208, 208, 208, 255}, {218, 218, 218, 255}, {228, 228, 228, 255}, {238, 238, 238, 255},
+}
+
+// Helper to generate the 6x6x6 color cube part of the palette
+// func init() {
+// 	levels := []uint8{0, 95, 135, 175, 215, 255}
+// 	idx := 16
+// 	for r := 0; r < 6; r++ {
+// 		for g := 0; g < 6; g++ {
+// 			for b := 0; b < 6; b++ {
+// 				xterm256Palette[idx] = sdl.Color{R: levels[r], G: levels[g], B: levels[b], A: 255}
+// 				idx++
+// 			}
+// 		}
+// 	}
+// }
+
 // glyphCacheKey uniquely identifies a glyph variation (char + color for now)
 // Note: SDL Color does not work directly as a map key, need comparable representation.
 // Using Fg code from buffer might be simpler if mapBufferColorToSDL is deterministic.
 // Let's try using the buffer code directly for simplicity.
 // Alternatively, use a struct { char rune; r, g, b, a uint8 } or string representation.
 type glyphCacheKey struct {
-	char rune
-	fg   int // Using buffer's Fg code
-	// TODO: Add other attributes like Bold, Underline if they affect glyph rendering itself
+	char        rune
+	fg          int // Buffer's color code/index
+	fgColorType string
+	// Bg needed if rendering involves it directly (e.g., specific blend modes)
+	// For now, assume Bg is handled by background rect fill.
 }
 
 // SDLRenderer handles drawing the terminal buffer state using SDL.
@@ -60,9 +130,9 @@ func (r *SDLRenderer) Destroy() {
 }
 
 // Draw renders the current state of the buffer to the SDL renderer.
-// Assumes the caller handles Clear and Present.
 func (r *SDLRenderer) Draw(buf *buffer.Output) error {
-	grid := buf.GetGrid()
+	// Use GetVisibleGrid which accounts for scrollback offset
+	grid := buf.GetVisibleGrid()
 	rows := len(grid)
 	cols := 0
 	if rows > 0 {
@@ -73,14 +143,18 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		for x := 0; x < cols; x++ {
 			cell := grid[y][x]
 
-			// Determine colors, handling reverse video
+			// --- Determine Colors & Draw Background ---
 			fgCode := cell.Fg
 			bgCode := cell.Bg
+			fgType := cell.FgColorType
+			bgType := cell.BgColorType
+
 			if cell.Reverse {
 				fgCode, bgCode = bgCode, fgCode
+				fgType, bgType = bgType, fgType
 			}
-			fgColorSDL := mapBufferColorToSDL(fgCode)
-			bgColorSDL := mapBufferColorToSDL(bgCode)
+			fgColorSDL := mapBufferColorToSDL(fgCode, fgType)
+			bgColorSDL := mapBufferColorToSDL(bgCode, bgType)
 
 			// --- Draw Background ---
 			bgRect := sdl.Rect{
@@ -94,14 +168,14 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 			// --- Draw Character (if not blank) using Cache ---
 			if cell.Char != ' ' {
-				key := glyphCacheKey{char: cell.Char, fg: fgCode}
+				key := glyphCacheKey{char: cell.Char, fg: fgCode, fgColorType: fgType}
 				texture, found := r.glyphCache[key]
 
 				if !found {
 					// Not cached: Render, create texture, add to cache
-					fnt := r.font // Assign to local variable
+					fnt := r.font
 					charStr := string(cell.Char)
-					log.Printf("Rendering uncached char: '%s' (Rune: %U, Int: %d)", charStr, cell.Char, cell.Char) // DEBUG LOG
+					log.Printf("Rendering uncached char: '%s' (Rune: %U, Int: %d) Fg: %d (%s)", charStr, cell.Char, cell.Char, fgCode, fgType) // More detailed log
 					surface, err := fnt.RenderUTF8Blended(charStr, fgColorSDL)
 					if err != nil {
 						log.Printf("  -> Failed to render char '%c' (%d): %v", cell.Char, cell.Char, err)
@@ -113,8 +187,8 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 						log.Printf("Failed to create texture for char '%c': %v", cell.Char, err)
 						continue
 					}
-					surface.Free()              // Free surface, texture holds the data
-					r.glyphCache[key] = texture // Add to cache
+					surface.Free()
+					r.glyphCache[key] = texture
 				}
 
 				// Get texture dimensions (needed whether cached or newly created)
@@ -148,59 +222,61 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	}
 
 	// --- Draw Cursor ---
-	cursorX, cursorY := buf.GetCursorPos()
-	cursorRect := sdl.Rect{
-		X: int32(cursorX * r.glyphWidth),
-		Y: int32(cursorY * r.glyphHeight),
-		W: int32(r.glyphWidth),
-		H: int32(r.glyphHeight),
+	// Only draw the cursor if we are viewing the live screen (offset == 0)
+	if buf.IsLiveView() { // Need to add IsLiveView() to buffer
+		cursorX, cursorY := buf.GetCursorPos()
+		// Ensure cursor pos is valid for the current grid dimensions
+		if cursorY >= 0 && cursorY < rows && cursorX >= 0 && cursorX < cols {
+			cursorRect := sdl.Rect{
+				X: int32(cursorX * r.glyphWidth),
+				Y: int32(cursorY * r.glyphHeight),
+				W: int32(r.glyphWidth),
+				H: int32(r.glyphHeight),
+			}
+			cursorColor := sdl.Color{R: 255, G: 255, B: 255, A: 255}
+			r.sdlRenderer.SetDrawColor(cursorColor.R, cursorColor.G, cursorColor.B, cursorColor.A)
+			r.sdlRenderer.FillRect(&cursorRect)
+		}
 	}
-	// Simple block cursor - use inverted color of the cell underneath or default white
-	// For simplicity, just draw white block for now
-	cursorColor := sdl.Color{R: 255, G: 255, B: 255, A: 255}
-	r.sdlRenderer.SetDrawColor(cursorColor.R, cursorColor.G, cursorColor.B, cursorColor.A)
-	r.sdlRenderer.FillRect(&cursorRect)
-	// TODO: Blinking cursor? Different cursor shapes?
 
 	return nil
 }
 
-// mapBufferColorToSDL converts buffer color codes to SDL colors.
-func mapBufferColorToSDL(code int) sdl.Color {
-	// Handle default codes first
-	if code == buffer.FgDefault {
-		// TODO: Make default colors configurable
-		return sdl.Color{R: 204, G: 204, B: 204, A: 255} // Light Gray
-	}
-	if code == buffer.BgDefault {
-		return sdl.Color{R: 0, G: 0, B: 0, A: 255} // Black
+// mapBufferColorToSDL converts buffer color codes/indices to SDL colors based on type.
+func mapBufferColorToSDL(value int, colorType string) sdl.Color {
+	switch colorType {
+	case buffer.ColorTypeStandard:
+		// Handle default codes
+		if value == buffer.FgDefault {
+			return sdl.Color{R: 204, G: 204, B: 204, A: 255} // Default FG
+		}
+		if value == buffer.BgDefault {
+			return sdl.Color{R: 0, G: 0, B: 0, A: 255} // Default BG
+		}
+		// Map standard 16 color codes (30-37, 40-47) - Assume bright codes map to bright colors if added later
+		var index int
+		if value >= buffer.BgBlack {
+			index = value - buffer.BgBlack
+		} else {
+			index = value - buffer.FgBlack
+		}
+		if index >= 0 && index < 16 {
+			// Use first 16 entries of the 256 palette for standard/bright mapping
+			return xterm256Palette[index]
+		}
+
+	case buffer.ColorType256:
+		if value >= 0 && value <= 255 {
+			return xterm256Palette[value]
+		}
+
+	case buffer.ColorTypeTrue:
+		// TODO: Handle truecolor (value would need unpacking R,G,B)
+		break
 	}
 
-	// Map standard 16 colors
-	switch code {
-	// Foreground/Background normal intensity
-	case buffer.FgBlack, buffer.BgBlack:
-		return sdl.Color{R: 0, G: 0, B: 0, A: 255}
-	case buffer.FgRed, buffer.BgRed:
-		return sdl.Color{R: 205, G: 49, B: 49, A: 255}
-	case buffer.FgGreen, buffer.BgGreen:
-		return sdl.Color{R: 13, G: 188, B: 121, A: 255}
-	case buffer.FgYellow, buffer.BgYellow:
-		return sdl.Color{R: 229, G: 229, B: 16, A: 255}
-	case buffer.FgBlue, buffer.BgBlue:
-		return sdl.Color{R: 36, G: 114, B: 200, A: 255}
-	case buffer.FgMagenta, buffer.BgMagenta:
-		return sdl.Color{R: 188, G: 63, B: 188, A: 255}
-	case buffer.FgCyan, buffer.BgCyan:
-		return sdl.Color{R: 17, G: 168, B: 205, A: 255}
-	case buffer.FgWhite, buffer.BgWhite:
-		return sdl.Color{R: 229, G: 229, B: 229, A: 255}
-	// TODO: Add bright colors (90-97, 100-107)
-	// TODO: Add 256 / TrueColor mapping
-	default:
-		// Fallback to default foreground if code is unknown
-		return sdl.Color{R: 204, G: 204, B: 204, A: 255}
-	}
+	// Fallback / Unknown: return default foreground color
+	return sdl.Color{R: 204, G: 204, B: 204, A: 255}
 }
 
 // ClearScreen is no longer needed here as SDL clearing is handled in main loop.

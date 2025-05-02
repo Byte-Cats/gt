@@ -65,6 +65,8 @@ const defaultBgColor = BgDefault
 // defaultColorType represents the default color type.
 const defaultColorType = ColorTypeStandard
 
+const defaultMaxScrollback = 1000 // Default number of lines to keep in scrollback
+
 // Cell represents a single character cell on the terminal screen
 type Cell struct {
 	Char        rune
@@ -99,6 +101,14 @@ type Output struct {
 	cols    int
 	cursorX int
 	cursorY int
+
+	// Scrollback
+	scrollback      [][]Cell // Circular buffer for scrollback lines
+	maxScrollback   int      // Max lines in scrollback
+	scrollbackLines int      // Current number of lines stored in scrollback
+	scrollbackHead  int      // Index in scrollback slice where the NEXT scrolled line will go
+	viewOffset      int      // How many lines the view is scrolled back (0 = live view)
+
 	// Internal state for parsing escape sequences
 	parserState   string // e.g., "GROUND", "ESC", "CSI"
 	params        []int  // Parameters for CSI sequence
@@ -126,7 +136,7 @@ const (
 	stateCsi    = "CSI"
 )
 
-// NewOutputBuffer creates a new terminal buffer with given dimensions.
+// NewOutputBuffer creates a new terminal buffer with given dimensions and scrollback.
 func NewOutputBuffer(rows, cols int) *Output {
 	grid := make([][]Cell, rows)
 	for r := range grid {
@@ -135,12 +145,20 @@ func NewOutputBuffer(rows, cols int) *Output {
 			grid[r][c] = newDefaultCell()
 		}
 	}
+	// Initialize scrollback with capacity
+	scrollback := make([][]Cell, defaultMaxScrollback)
+
 	return &Output{
 		grid:               grid,
 		rows:               rows,
 		cols:               cols,
 		cursorX:            0,
 		cursorY:            0,
+		scrollback:         scrollback,
+		maxScrollback:      defaultMaxScrollback,
+		scrollbackLines:    0,
+		scrollbackHead:     0,
+		viewOffset:         0,
 		parserState:        stateGround,
 		params:             make([]int, 0, 16),
 		currentFg:          defaultFgColor,
@@ -531,14 +549,92 @@ func (o *Output) eraseInLine(mode int) {
 	}
 }
 
-// scrollUp shifts all lines in the grid up by one, discarding the top line
-// and clearing the new bottom line with default attributes.
+// scrollUp shifts all lines in the grid up by one, saving the top line to scrollback,
+// and clearing the new bottom line.
 func (o *Output) scrollUp() {
+	// If view is scrolled back, just decrease offset instead of scrolling content
+	if o.viewOffset > 0 {
+		o.viewOffset--
+		return
+	}
+
+	// Save the top line to the scrollback buffer (circularly)
+	// Need to copy the line data, not just the slice header
+	topLineCopy := make([]Cell, o.cols)
+	copy(topLineCopy, o.grid[0])
+	o.scrollback[o.scrollbackHead] = topLineCopy
+	o.scrollbackHead = (o.scrollbackHead + 1) % o.maxScrollback
+	if o.scrollbackLines < o.maxScrollback {
+		o.scrollbackLines++
+	}
+
+	// Shift grid lines up
 	copy(o.grid[0:], o.grid[1:])
+	// Clear the last line
 	o.grid[o.rows-1] = make([]Cell, o.cols)
 	for c := range o.grid[o.rows-1] {
 		o.grid[o.rows-1][c] = newDefaultCell()
 	}
+}
+
+// ScrollUp moves the view offset up (further into scrollback).
+func (o *Output) ScrollUp(lines int) {
+	newOffset := o.viewOffset + lines
+	// Clamp offset to the number of lines actually in scrollback
+	if newOffset > o.scrollbackLines {
+		newOffset = o.scrollbackLines
+	}
+	o.viewOffset = newOffset
+}
+
+// ScrollDown moves the view offset down (towards the live view).
+func (o *Output) ScrollDown(lines int) {
+	newOffset := o.viewOffset - lines
+	if newOffset < 0 {
+		newOffset = 0 // Clamp at live view
+	}
+	o.viewOffset = newOffset
+}
+
+// GetVisibleGrid returns the slice of rows representing the current view,
+// considering the viewOffset into the scrollback buffer.
+func (o *Output) GetVisibleGrid() [][]Cell {
+	visibleGrid := make([][]Cell, o.rows)
+
+	if o.viewOffset == 0 {
+		// Live view: just return the main grid (or a copy?)
+		// Return direct for now, renderer only reads
+		return o.grid
+	} else {
+		// Viewing scrollback
+		scrollbackStartIdx := (o.scrollbackHead - o.scrollbackLines + o.viewOffset + o.maxScrollback) % o.maxScrollback
+
+		scrollRowsToShow := min(o.rows, o.viewOffset)
+		gridRowsToShow := o.rows - scrollRowsToShow
+
+		// Copy lines from scrollback (handle wrap-around and nil entries)
+		readIdx := scrollbackStartIdx
+		for i := 0; i < scrollRowsToShow; i++ {
+			if o.scrollback[readIdx] != nil {
+				visibleGrid[i] = o.scrollback[readIdx]
+			} else {
+				// If scrollback line doesn't exist (nil), create an empty line
+				emptyLine := make([]Cell, o.cols)
+				for c := range emptyLine {
+					emptyLine[c] = newDefaultCell()
+				}
+				visibleGrid[i] = emptyLine
+			}
+			readIdx = (readIdx + 1) % o.maxScrollback
+		}
+
+		// Copy lines from live grid
+		for i := 0; i < gridRowsToShow; i++ {
+			visibleGrid[scrollRowsToShow+i] = o.grid[i]
+		}
+	}
+
+	return visibleGrid
 }
 
 // GetGrid returns the current state of the screen grid.
@@ -610,4 +706,9 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// IsLiveView returns true if the view offset is zero (viewing the live screen).
+func (o *Output) IsLiveView() bool {
+	return o.viewOffset == 0
 }
