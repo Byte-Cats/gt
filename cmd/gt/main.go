@@ -103,8 +103,8 @@ func runApp() error {
 	}
 
 	// Define maximum initial window size in pixels
-	const maxInitialWidthPx = 1280
-	const maxInitialHeightPx = 800
+	const maxInitialWidthPx = 900
+	const maxInitialHeightPx = 600
 
 	// Initial desired size based on cols/rows (or defaults)
 	desiredInitialCols := 80
