@@ -106,6 +106,8 @@ func main() {
 		shell = "bash"
 	}
 	c := exec.Command(shell)
+	// Set TERM environment variable for the PTY process
+	c.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	// Start PTY with initial calculated size
 	winSize := &pty.Winsize{Rows: uint16(initialRows), Cols: uint16(initialCols)}

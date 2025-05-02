@@ -1,7 +1,8 @@
 # Naruto Inspired GT Theme
 # Copy this file to ~/.config/gt/theme.toml and modify it to customize.
 
-font_path = "/System/Library/Fonts/Menlo.ttc" # Keep Menlo for now
+# font_path = "/System/Library/Fonts/Menlo.ttc" # Keep Menlo for now
+font_path = "/Users/fource/Library/Fonts/SpaceMono-Regular.ttf" # Use SpaceMono
 font_size = 15
 
 [colors]
