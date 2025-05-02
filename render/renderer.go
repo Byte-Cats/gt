@@ -117,10 +117,11 @@ type SDLRenderer struct {
 	scrollableImgAnchorY int32        // Y position (pixels) where the top of the scrollable image is anchored
 	lastWindowHeightPx   int32        // Last known window height in pixels
 	theme                config.Theme // Store the loaded theme
+	topPaddingPx         int          // Top padding (e.g., for macOS title bar) in pixels
 }
 
 // NewSDLRenderer creates a new renderer that draws to the given SDL renderer using the specified font.
-func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme config.Theme) *SDLRenderer {
+func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme config.Theme, topPaddingPx int) *SDLRenderer {
 	// Calculate glyph dimensions (assuming monospace)
 	// Error handling should ideally happen before calling NewSDLRenderer
 	width, height, _ := font.SizeUTF8("W")
@@ -147,7 +148,8 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme conf
 		scrollableImgTargetH: -1, // Indicate no scrollable image initially
 		scrollableImgAnchorY: -1,
 		lastWindowHeightPx:   -1,
-		theme:                theme, // Store the theme
+		theme:                theme,        // Store the theme
+		topPaddingPx:         topPaddingPx, // Store top padding
 	}
 }
 
@@ -183,13 +185,13 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 	// Draw background (Solid or Gradient)
 	if r.theme.Gradient.Enabled {
-		err = r.drawGradientBackground(ww, wh)
+		err = r.drawGradientBackground(ww, wh, r.topPaddingPx)
 		if err != nil {
 			log.Printf("Error drawing gradient background: %v. Falling back to solid.", err)
-			r.drawSolidBackground(ww, wh) // Fallback to solid on error
+			r.drawSolidBackground(ww, wh, r.topPaddingPx) // Fallback to solid on error
 		}
 	} else {
-		r.drawSolidBackground(ww, wh)
+		r.drawSolidBackground(ww, wh, r.topPaddingPx)
 	}
 
 	// Reset scrollable image tracking for this frame.
@@ -207,10 +209,23 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 	// Keep track of areas covered by images in the current row
 	imageSkipUntil := make(map[int]int) // map[row] => skip rendering text cells until col X
 
+	// Set clip rect for all cell/cursor/image drawing below padding
+	clipRect := sdl.Rect{X: 0, Y: int32(r.topPaddingPx), W: ww, H: wh - int32(r.topPaddingPx)}
+	if clipRect.H < 0 {
+		clipRect.H = 0
+	}
+	r.renderer.SetClipRect(&clipRect)
+
 	for y := 0; y < rows; y++ {
-		skipUntilCol, rowHasSkip := imageSkipUntil[y]
+		var skipUntilCol int
+		var rowHasSkip bool
+		if skip, ok := imageSkipUntil[y]; ok {
+			skipUntilCol = skip
+			rowHasSkip = true
+		}
+
 		for x := 0; x < cols; x++ {
-			// If we are within a skipped area from a previous image, continue
+			// Skip rendering if within an image area for this row
 			if rowHasSkip && x < skipUntilCol {
 				continue
 			}
@@ -326,36 +341,40 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 								wConstraint, hConstraint, preserveAspect,
 								texW, texH, termW, r.lastWindowHeightPx)
 
-							// Store details if this image is potentially scrollable
-							if targetH > r.lastWindowHeightPx {
+							// Store details if this image is potentially scrollable (consider padding)
+							windowVisibleHeight := r.lastWindowHeightPx - int32(r.topPaddingPx)
+							if windowVisibleHeight < 0 {
+								windowVisibleHeight = 0
+							}
+							if targetH > windowVisibleHeight {
 								r.scrollableImgTargetH = targetH
-								r.scrollableImgAnchorY = int32(y * r.cellHeight)
-								// Ensure scroll offset is still valid
-								maxScroll := targetH - r.lastWindowHeightPx
+								r.scrollableImgAnchorY = int32(y*r.cellHeight) + int32(r.topPaddingPx) // Anchor includes padding
+								// Ensure scroll offset is still valid relative to visible height
+								maxScroll := targetH - windowVisibleHeight
+								if maxScroll < 0 {
+									maxScroll = 0
+								} // Ensure maxScroll is not negative
 								r.imgScrollOffsetY = max(0, min(r.imgScrollOffsetY, maxScroll))
 							}
 
-							// Destination rect: position includes scroll offset, size is calculated target
+							// Destination rect: position includes top padding AND scroll offset
 							imgDstRect := sdl.Rect{
 								X: int32(x * r.cellWidth),
-								Y: int32(y*r.cellHeight) - r.imgScrollOffsetY, // Apply scroll offset
-								W: targetW,                                    // Use calculated width
-								H: targetH,                                    // Use calculated height
+								Y: int32(y*r.cellHeight) + int32(r.topPaddingPx) - r.imgScrollOffsetY, // APPLY PADDING & SCROLL
+								W: targetW,
+								H: targetH,
 							}
-							log.Printf("   -> Drawing image texture at [%d, %d] W:%d H:%d (ScrollY: %d)",
-								imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H, r.imgScrollOffsetY)
+							log.Printf("   -> Drawing image texture at [%d, %d] W:%d H:%d (Padding: %d, ScrollY: %d)",
+								imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H, r.topPaddingPx, r.imgScrollOffsetY)
 
-							// Set clip rect for this draw call to window bounds
-							clipRect := sdl.Rect{X: 0, Y: 0, W: ww, H: wh}
-							r.renderer.SetClipRect(&clipRect)
-
+							// Clip rect is already set outside the loop
 							errCopy := r.renderer.Copy(imgTexture, nil, &imgDstRect)
 
-							// Reset clip rect
-							r.renderer.SetClipRect(nil)
+							// Reset clip rect (done after loop)
+							// r.renderer.SetClipRect(nil)
 
 							if errCopy != nil {
-								log.Printf("   -> Error copying image texture: %v", errCopy) // LOG 8
+								log.Printf("   -> Error copying image texture: %v", errCopy)
 							}
 
 							// Mark this cell as skipped for text rendering
@@ -397,17 +416,17 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 			fgColorSDL := r.mapBufferColorToSDL(fgCode, fgType)
 			bgColorSDL := r.mapBufferColorToSDL(bgCode, bgType)
 
-			// --- Draw Background ---
+			// --- Draw Background --- APPLY PADDING
 			bgRect := sdl.Rect{
 				X: int32(x * r.glyphWidth),
-				Y: int32(y * r.glyphHeight),
+				Y: int32(y*r.glyphHeight) + int32(r.topPaddingPx), // APPLY PADDING
 				W: int32(r.glyphWidth),
 				H: int32(r.glyphHeight),
 			}
 			r.renderer.SetDrawColor(bgColorSDL.R, bgColorSDL.G, bgColorSDL.B, bgColorSDL.A)
 			r.renderer.FillRect(&bgRect)
 
-			// --- Draw Character (if not blank) using Cache ---
+			// --- Draw Character (if not blank) using Cache --- APPLY PADDING
 			if cell.Char != ' ' {
 				// Select font based on bold attribute
 				activeFont := r.font
@@ -447,19 +466,19 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 					continue // Should not happen often
 				}
 
-				// Copy texture to renderer
+				// Copy texture to renderer - APPLY PADDING
 				dstRect := sdl.Rect{
 					X: int32(x * r.glyphWidth),
-					Y: int32(y * r.glyphHeight),
-					W: int32(r.glyphWidth),  // Use fixed grid width
-					H: int32(r.glyphHeight), // Use fixed grid height
+					Y: int32(y*r.glyphHeight) + int32(r.topPaddingPx), // APPLY PADDING
+					W: int32(r.glyphWidth),
+					H: int32(r.glyphHeight),
 				}
-				// Use SrcRect=nil to copy whole texture, DstRect defines position and size
 				r.renderer.Copy(texture, nil, &dstRect)
 
-				// --- Draw Underline ---
+				// --- Draw Underline --- APPLY PADDING
 				if cell.Underline {
-					lineY := int32((y+1)*r.glyphHeight - 1) // Bottom of the cell
+					// lineY := int32((y+1)*r.glyphHeight - 1) // Old calculation
+					lineY := dstRect.Y + int32(r.glyphHeight) - 1 // Bottom of the padded cell
 					r.renderer.SetDrawColor(fgColorSDL.R, fgColorSDL.G, fgColorSDL.B, fgColorSDL.A)
 					r.renderer.DrawLine(dstRect.X, lineY, dstRect.X+dstRect.W, lineY)
 				}
@@ -469,19 +488,16 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		}
 	}
 
-	// --- Draw Cursor ---
-	// Only draw the cursor if we are viewing the live screen (offset == 0)
-	if buf.IsLiveView() { // Need to add IsLiveView() to buffer
+	// --- Draw Cursor --- APPLY PADDING
+	if buf.IsLiveView() {
 		cursorX, cursorY := buf.GetCursorPos()
-		// Ensure cursor pos is valid for the current grid dimensions
 		if cursorY >= 0 && cursorY < rows && cursorX >= 0 && cursorX < cols {
 			cursorRect := sdl.Rect{
 				X: int32(cursorX * r.glyphWidth),
-				Y: int32(cursorY * r.glyphHeight),
+				Y: int32(cursorY*r.glyphHeight) + int32(r.topPaddingPx), // APPLY PADDING
 				W: int32(r.glyphWidth),
 				H: int32(r.glyphHeight),
 			}
-			// Use theme-aware cursor color
 			cursorColor, err := parseHexColor(r.theme.Colors.Cursor)
 			if err != nil {
 				log.Printf("Warning: Invalid cursor color in theme '%s': %v. Using white.", r.theme.Colors.Cursor, err)
@@ -492,25 +508,34 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		}
 	}
 
+	// Reset clip rect after drawing cells/cursor
+	r.renderer.SetClipRect(nil)
+
 	return nil
 }
 
-// drawSolidBackground clears the screen with a solid color from the theme.
-func (r *SDLRenderer) drawSolidBackground(w, h int32) {
+// drawSolidBackground clears the screen with a solid color from the theme, considering top padding.
+func (r *SDLRenderer) drawSolidBackground(w, h int32, topPadding int) {
 	bgColor, err := parseHexColor(r.theme.Colors.Background)
 	if err != nil {
 		log.Printf("Warning: Invalid background color in theme '%s': %v. Using black.", r.theme.Colors.Background, err)
 		bgColor = sdl.Color{R: 0, G: 0, B: 0, A: 255}
 	}
 	r.renderer.SetDrawColor(bgColor.R, bgColor.G, bgColor.B, bgColor.A)
+	// Clear the whole window first (might be needed if padding != 0)
 	r.renderer.Clear()
+	// Optionally, only clear the area below padding:
+	// clearRect := sdl.Rect{X: 0, Y: int32(topPadding), W: w, H: h - int32(topPadding)}
+	// r.renderer.FillRect(&clearRect)
 }
 
-// drawGradientBackground draws a gradient background based on theme settings.
-func (r *SDLRenderer) drawGradientBackground(w, h int32) error {
+// drawGradientBackground draws a gradient background based on theme settings, considering top padding.
+func (r *SDLRenderer) drawGradientBackground(w, h int32, topPadding int) error {
 	startColor, err1 := parseHexColor(r.theme.Gradient.StartColor)
 	endColor, err2 := parseHexColor(r.theme.Gradient.EndColor)
 	if err1 != nil || err2 != nil {
+		log.Printf("Warning: Invalid gradient colors in theme '%s': %v, %v. Using solid background.", r.theme.Gradient.StartColor, err1, err2)
+		r.drawSolidBackground(w, h, topPadding)
 		return fmt.Errorf("invalid gradient colors: start=%v, end=%v", err1, err2)
 	}
 
@@ -519,11 +544,30 @@ func (r *SDLRenderer) drawGradientBackground(w, h int32) error {
 			t := float32(x) / float32(w-1) // Interpolation factor (0.0 to 1.0)
 			col := interpolateColor(startColor, endColor, t)
 			r.renderer.SetDrawColor(col.R, col.G, col.B, col.A)
+			// Draw full height line for horizontal gradient
 			r.renderer.DrawLine(x, 0, x, h-1)
 		}
 	} else { // Default to vertical
-		for y := int32(0); y < h; y++ {
-			t := float32(y) / float32(h-1) // Interpolation factor (0.0 to 1.0)
+		// Draw the theme's main background color in the padded area
+		if topPadding > 0 {
+			padColor, err := parseHexColor(r.theme.Colors.Background) // Get main background color
+			if err != nil {
+				log.Printf("Warning: Invalid background color '%s' for padding: %v. Using black.", r.theme.Colors.Background, err)
+				padColor = sdl.Color{R: 0, G: 0, B: 0, A: 255}
+			}
+			r.renderer.SetDrawColor(padColor.R, padColor.G, padColor.B, padColor.A)
+			padRect := sdl.Rect{X: 0, Y: 0, W: w, H: int32(topPadding)}
+			r.renderer.FillRect(&padRect)
+		}
+		// Draw gradient below padding
+		drawH := h - int32(topPadding)
+		startY := int32(topPadding)
+		if drawH <= 0 {
+			return nil // Nothing to draw below padding
+		}
+		for yOffset := int32(0); yOffset < drawH; yOffset++ {
+			y := startY + yOffset
+			t := float32(yOffset) / float32(drawH-1) // Interpolation factor (0.0 to 1.0 over drawH)
 			col := interpolateColor(startColor, endColor, t)
 			r.renderer.SetDrawColor(col.R, col.G, col.B, col.A)
 			r.renderer.DrawLine(0, y, w-1, y)
@@ -756,16 +800,16 @@ func (r *SDLRenderer) calculateTargetDimensions(wConstraint, hConstraint string,
 	// --- Original Logic (commented out for debugging) ---
 	/*
 		passeConstraint := func(constraint string, nativeDim int32, cellDim int, termDimPx int32) int32 {
-			// ... (previous parsing logic) ...
+			// ... (rest of the parsing logic) ...
 		}
 
 		initialW := parseConstraint(wConstraint, nativeW, r.cellWidth, termW)
 		initialH := parseConstraint(hConstraint, nativeH, r.cellHeight, termH)
 
 		if preserveAspect && nativeW > 0 && nativeH > 0 {
-			// ... (previous aspect logic) ...
+			// ... (rest of the aspect logic) ...
 		} else {
-			// ... (previous non-aspect logic) ...
+			// ... (rest of the non-aspect logic) ...
 		}
 
 		widthBeforeClamp := targetW

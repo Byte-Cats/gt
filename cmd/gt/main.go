@@ -1,9 +1,7 @@
 package main
 
 import (
-	"gt/buffer"
-	"gt/config" // Import config package
-	"gt/render" // Will be refactored later
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -14,10 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"gt/buffer"
+	"gt/config"
+	"gt/render"
+
 	"github.com/creack/pty"
 	"github.com/veandco/go-sdl2/sdl"
 	"github.com/veandco/go-sdl2/ttf"
-	// "golang.org/x/term" // No longer needed
 )
 
 /* // Constants moved to theme config
@@ -30,54 +31,75 @@ const (
 */
 
 func main() {
+	if err := runApp(); err != nil {
+		log.Fatalf("Application error: %v", err)
+	}
+}
+
+func runApp() error {
 	runtime.LockOSThread() // SDL requires the main loop on the main thread
 
-	// --- Load Theme ---
-	theme := config.LoadTheme()
-
-	// --- Initialize SDL ---
+	// --- SDL/TTF Initialization ---
 	if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
-		log.Fatalf("Failed to initialize SDL: %v", err)
+		return fmt.Errorf("could not initialize SDL: %w", err)
 	}
 	defer sdl.Quit()
 
 	if err := ttf.Init(); err != nil {
-		log.Fatalf("Failed to initialize SDL_ttf: %v", err)
+		return fmt.Errorf("could not initialize SDL_ttf: %w", err)
 	}
 	defer ttf.Quit()
 
-	// --- Load Fonts ---
-	log.Printf("Attempting to load font: %s (Size: %d)", theme.FontPath, theme.FontSize)
+	// --- Configuration Loading ---
+	theme := config.LoadTheme() // LoadTheme only returns the theme
+	// Removed error check here as LoadTheme handles fallback internally and logs warnings.
+
+	// --- Font Loading ---
+	// Ensure FreeType library is available for bold variants
+	// This might only be relevant on certain platforms or build configurations.
+	// Consider if explicit FreeType linking/handling is needed.
+
+	// Try loading the regular font first
 	font, err := ttf.OpenFont(theme.FontPath, theme.FontSize)
 	if err != nil {
-		log.Printf("Warning: Failed to open configured font %s: %v", theme.FontPath, err)
-		// Fallback 1: Try default Menlo
-		defaultFontPath := "/System/Library/Fonts/Menlo.ttc"
-		log.Printf("Attempting fallback font: %s", defaultFontPath)
-		font, err = ttf.OpenFont(defaultFontPath, theme.FontSize)
-		if err != nil {
-			// Fallback 2: Give up?
-			log.Fatalf("Failed to open configured font and fallback font %s: %v", defaultFontPath, err)
-		}
-		theme.FontPath = defaultFontPath // Update theme if we used fallback
+		return fmt.Errorf("failed to open font at %s: %w", theme.FontPath, err)
 	}
+	log.Printf("Loaded font: %s, size: %d", theme.FontPath, theme.FontSize)
 	defer font.Close()
 
-	// Attempt to load bold font variant from the same file as the primary font
+	// Try loading the bold font variant
 	var boldFont *ttf.Font
-	boldFont, err = ttf.OpenFontIndex(theme.FontPath, theme.FontSize, 1) // Use theme.FontPath
-	if err != nil {
-		log.Printf("Warning: Could not load bold font variant from %s (index 1): %v", theme.FontPath, err)
-		boldFont = nil // Proceed without bold variant
+	// Specific handling for Space Mono in user library
+	spaceMonoRegularPath := "/Users/fource/Library/Fonts/SpaceMono-Regular.ttf"
+	spaceMonoBoldPath := "/Users/fource/Library/Fonts/SpaceMono-Bold.ttf"
+
+	if theme.FontPath == spaceMonoRegularPath {
+		boldFont, err = ttf.OpenFont(spaceMonoBoldPath, theme.FontSize)
+		if err != nil {
+			log.Printf("Warning: Could not load Space Mono Bold variant from %s: %v. Proceeding without bold.", spaceMonoBoldPath, err)
+			boldFont = nil
+		} else {
+			log.Printf("Loaded bold font variant: %s", spaceMonoBoldPath)
+		}
 	} else {
-		log.Printf("Loaded bold font variant from %s (index 1)", theme.FontPath)
+		// Fallback for other fonts (e.g., TTC collections like Menlo or SFMono if path was different)
+		boldFont, err = ttf.OpenFontIndex(theme.FontPath, theme.FontSize, 1)
+		if err != nil {
+			log.Printf("Warning: Could not load bold font variant from %s (index 1): %v. Proceeding without bold.", theme.FontPath, err)
+			boldFont = nil // Proceed without bold variant
+		} else {
+			log.Printf("Loaded bold font variant from %s (index 1)", theme.FontPath)
+		}
+	}
+
+	if boldFont != nil {
 		defer boldFont.Close()
 	}
 
 	// Calculate cell size based on font
 	glyphWidth, glyphHeight, err := font.SizeUTF8("W") // Use a wide char for estimate
 	if err != nil {
-		log.Fatalf("Failed to get font glyph size: %v", err)
+		return fmt.Errorf("failed to get font glyph size: %w", err)
 	}
 
 	// Initial window size based on cols/rows (or defaults)
@@ -90,13 +112,16 @@ func main() {
 	window, err := sdl.CreateWindow("gt Terminal", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED,
 		int32(windowWidth), int32(windowHeight), sdl.WINDOW_SHOWN|sdl.WINDOW_RESIZABLE)
 	if err != nil {
-		log.Fatalf("Failed to create window: %v", err)
+		return fmt.Errorf("failed to create window: %w", err)
 	}
 	defer window.Destroy()
 
+	// Call platform-specific window adjustments and get top padding
+	topPadding := customizeWindow(window)
+
 	rendererSDL, err := sdl.CreateRenderer(window, -1, sdl.RENDERER_ACCELERATED)
 	if err != nil {
-		log.Fatalf("Failed to create renderer: %v", err)
+		return fmt.Errorf("failed to create renderer: %w", err)
 	}
 	defer rendererSDL.Destroy()
 
@@ -113,18 +138,14 @@ func main() {
 	winSize := &pty.Winsize{Rows: uint16(initialRows), Cols: uint16(initialCols)}
 	ptmx, err := pty.StartWithSize(c, winSize)
 	if err != nil {
-		log.Fatalf("Failed to start pty: %v", err)
+		return fmt.Errorf("failed to start pty: %w", err)
 	}
 	defer func() { _ = ptmx.Close() }()
 
 	// --- Buffer & Renderer Setup ---
 	outBuffer := buffer.NewOutputBuffer(initialRows, initialCols)
-	// Pass both fonts to the renderer
-	// termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont)
-	// defer termRenderer.Destroy() // Defer cleanup of the glyph cache
-
-	// Pass both fonts and theme to the renderer
-	termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont, theme)
+	// Pass both fonts, theme, and top padding to the renderer
+	termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont, theme, topPadding)
 	defer termRenderer.Destroy()
 
 	// --- Input/Output Goroutines ---
@@ -269,13 +290,18 @@ func main() {
 						}
 					}
 
-					// Request redraw if any scrolling occurred
+					// If any scrolling happened (image or buffer), trigger redraw
 					if scrolled {
 						needsRedraw = true
 					}
-					// ev.X could be used for horizontal scrolling if needed
 				}
 			}
+		}
+
+		// Check if buffer has changed (e.g., due to PTY output)
+		if outBuffer.HasChanged() { // Add HasChanged() method to Output buffer
+			needsRedraw = true
+			outBuffer.ResetChanged() // Reset the flag after checking
 		}
 
 		// --- Rendering ---
@@ -286,12 +312,24 @@ func main() {
 			// Call the new SDL renderer
 			if err := termRenderer.Draw(outBuffer); err != nil {
 				log.Printf("Error drawing buffer: %v", err)
+				// Decide if error is fatal
 			}
 
 			rendererSDL.Present()
 			needsRedraw = false
 		}
+
+		// Prevent busy-waiting if no events/redraws
+		if !needsRedraw {
+			runtime.Gosched() // Yield processor briefly
+			// Alternatively, introduce a small delay if CPU usage is high
+			// time.Sleep(1 * time.Millisecond)
+		}
 	}
 
-	log.Println("Exiting gt.")
+	log.Println("Application loop finished cleanly.")
+	return nil
 }
+
+// customizeWindow is defined in platform-specific files (main_darwin.go or main_other.go)
+// func customizeWindow(window *sdl.Window) {}

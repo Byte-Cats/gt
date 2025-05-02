@@ -158,6 +158,7 @@ type Output struct {
 	// Stored Images
 	images         map[ImageKey]StoredImage // Use exported type for key & store ID
 	imageIDCounter int                      // Counter for unique image IDs
+	changed        bool                     // Flag indicating buffer content has changed since last check
 
 	// TODO: Add scrollback buffer
 	// TODO: Add SGR state (current colors, bold, etc.)
@@ -207,6 +208,7 @@ func NewOutputBuffer(rows, cols int) *Output {
 		currentReverse:     false,
 		images:             make(map[ImageKey]StoredImage), // Initialize image map
 		imageIDCounter:     0,                              // Initialize counter
+		changed:            true,                           // Initially true to trigger first draw
 	}
 }
 
@@ -259,6 +261,7 @@ func (o *Output) Write(p []byte) (n int, err error) {
 		i += consumed
 		bytesProcessed += consumed
 	}
+	o.changed = true // Mark buffer as changed
 	return bytesProcessed, nil
 }
 
@@ -830,6 +833,7 @@ func (o *Output) Resize(newRows, newCols int) {
 		o.cursorY = 0
 	}
 
+	o.changed = true // Mark buffer as changed after resize
 }
 
 // min returns the smaller of two integers.
@@ -1022,4 +1026,14 @@ func (o *Output) handleEscIntermediate(b byte) {
 	log.Printf("[ESC Intermediate] Consuming designator: %c (%d)", b, b) // DEBUG LOG
 	// After consuming the designator, return to ground state
 	o.enterState(stateGround)
+}
+
+// HasChanged returns true if the buffer content has changed since the last call to ResetChanged.
+func (o *Output) HasChanged() bool {
+	return o.changed
+}
+
+// ResetChanged resets the changed flag to false.
+func (o *Output) ResetChanged() {
+	o.changed = false
 }

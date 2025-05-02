@@ -53,7 +53,7 @@ type Gradient struct {
 // DefaultTheme provides sensible default colors.
 func DefaultTheme() Theme {
 	return Theme{
-		FontPath: "/System/Library/Fonts/Menlo.ttc", // Sensible default for macOS
+		FontPath: "/System/Library/Fonts/Supplemental/SFMono-Regular.otf",
 		FontSize: 14,
 		Colors: ThemeColors{
 			Foreground:    "#cccccc", // Light gray
