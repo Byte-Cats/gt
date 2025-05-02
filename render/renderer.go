@@ -381,7 +381,8 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 							if targetH > windowVisibleHeight {
 								r.scrollableImgTargetH = targetH
 								r.scrollableImgAnchorY = anchorY
-								maxScrollY := targetH - windowVisibleHeight
+								// Add cellHeight buffer to maxScrollY
+								maxScrollY := targetH - windowVisibleHeight + int32(r.cellHeight)
 								if maxScrollY < 0 {
 									maxScrollY = 0
 								}
@@ -911,18 +912,28 @@ func max(a, b int32) int32 {
 // deltaY is the number of scroll *lines* (positive for up, negative for down).
 // Returns true if image scrolling occurred, false otherwise.
 func (r *SDLRenderer) ScrollImage(deltaY int) bool {
-	// Check if we have a scrollable image recorded from the last draw
-	if r.scrollableImgTargetH <= r.lastWindowHeightPx || r.lastWindowHeightPx <= 0 {
-		r.scrollableImgTargetH = -1 // Reset if not scrollable
-		return false                // Not scrollable or window height unknown
+	// Calculate visible height considering padding
+	visibleHeight := r.lastWindowHeightPx - int32(r.topPaddingPx)
+	if visibleHeight <= 0 {
+		return false // Cannot determine scroll bounds if window isn't tall enough
 	}
 
-	maxScroll := r.scrollableImgTargetH - r.lastWindowHeightPx
+	// Check if we have a scrollable image recorded from the last draw
+	if r.scrollableImgTargetH <= visibleHeight {
+		r.scrollableImgTargetH = -1 // Reset if not scrollable
+		return false                // Not scrollable
+	}
+
+	// Add cellHeight buffer to maxScroll
+	maxScroll := r.scrollableImgTargetH - visibleHeight + int32(r.cellHeight)
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
 	deltaPx := int32(deltaY * r.cellHeight) // Convert lines to pixels
 
 	newOffsetY := r.imgScrollOffsetY - deltaPx // Subtract delta because positive deltaY means scroll UP (show earlier part of image)
 
-	// Clamp the new offset
+	// Clamp the new offset using the adjusted maxScroll
 	clampedOffsetY := max(0, min(newOffsetY, maxScroll))
 
 	if clampedOffsetY != r.imgScrollOffsetY {
