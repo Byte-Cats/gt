@@ -85,6 +85,7 @@ type glyphCacheKey struct {
 	char        rune
 	fg          int // Buffer's color code/index
 	fgColorType string
+	bold        bool // Add bold to cache key
 	// Bg needed if rendering involves it directly (e.g., specific blend modes)
 	// For now, assume Bg is handled by background rect fill.
 }
@@ -93,6 +94,7 @@ type glyphCacheKey struct {
 type SDLRenderer struct {
 	sdlRenderer *sdl.Renderer
 	font        *ttf.Font
+	boldFont    *ttf.Font // Add bold font variant
 	glyphWidth  int
 	glyphHeight int
 
@@ -100,7 +102,7 @@ type SDLRenderer struct {
 }
 
 // NewSDLRenderer creates a new renderer that draws to the given SDL renderer using the specified font.
-func NewSDLRenderer(renderer *sdl.Renderer, font *ttf.Font) *SDLRenderer {
+func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font) *SDLRenderer {
 	// Calculate glyph dimensions (assuming monospace)
 	// Error handling should ideally happen before calling NewSDLRenderer
 	width, height, _ := font.SizeUTF8("W")
@@ -114,6 +116,7 @@ func NewSDLRenderer(renderer *sdl.Renderer, font *ttf.Font) *SDLRenderer {
 	return &SDLRenderer{
 		sdlRenderer: renderer,
 		font:        font,
+		boldFont:    boldFont, // Store bold font
 		glyphWidth:  width,
 		glyphHeight: height,
 		glyphCache:  make(map[glyphCacheKey]*sdl.Texture), // Initialize the cache
@@ -143,6 +146,11 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		for x := 0; x < cols; x++ {
 			cell := grid[y][x]
 
+			// Skip rendering continuation cells of wide characters
+			if cell.Width == 0 {
+				continue
+			}
+
 			// --- Determine Colors & Draw Background ---
 			fgCode := cell.Fg
 			bgCode := cell.Bg
@@ -168,12 +176,19 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 			// --- Draw Character (if not blank) using Cache ---
 			if cell.Char != ' ' {
-				key := glyphCacheKey{char: cell.Char, fg: fgCode, fgColorType: fgType}
+				// Select font based on bold attribute
+				activeFont := r.font
+				if cell.Bold && r.boldFont != nil {
+					activeFont = r.boldFont
+				}
+
+				// Update cache key to include bold status
+				key := glyphCacheKey{char: cell.Char, fg: fgCode, fgColorType: fgType, bold: cell.Bold}
 				texture, found := r.glyphCache[key]
 
 				if !found {
 					// Not cached: Render, create texture, add to cache
-					fnt := r.font
+					fnt := activeFont
 					charStr := string(cell.Char)
 					log.Printf("Rendering uncached char: '%s' (Rune: %U, Int: %d) Fg: %d (%s)", charStr, cell.Char, cell.Char, fgCode, fgType) // More detailed log
 					surface, err := fnt.RenderUTF8Blended(charStr, fgColorSDL)
@@ -271,8 +286,11 @@ func mapBufferColorToSDL(value int, colorType string) sdl.Color {
 		}
 
 	case buffer.ColorTypeTrue:
-		// TODO: Handle truecolor (value would need unpacking R,G,B)
-		break
+		// Unpack RGB from the integer value
+		r := uint8((value >> 16) & 0xFF)
+		g := uint8((value >> 8) & 0xFF)
+		b := uint8(value & 0xFF)
+		return sdl.Color{R: r, G: g, B: b, A: 255}
 	}
 
 	// Fallback / Unknown: return default foreground color

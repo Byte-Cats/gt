@@ -46,6 +46,17 @@ func main() {
 	}
 	defer font.Close()
 
+	// Attempt to load bold font variant from the same collection (index 1 often bold)
+	var boldFont *ttf.Font
+	boldFont, err = ttf.OpenFontIndex(fontPath, fontSize, 1)
+	if err != nil {
+		log.Printf("Warning: Could not load bold font variant from %s (index 1): %v", fontPath, err)
+		boldFont = nil // Proceed without bold variant
+	} else {
+		log.Printf("Loaded bold font variant from %s (index 1)", fontPath)
+		defer boldFont.Close()
+	}
+
 	// Calculate cell size based on font
 	glyphWidth, glyphHeight, err := font.SizeUTF8("W") // Use a wide char for estimate
 	if err != nil {
@@ -89,8 +100,8 @@ func main() {
 
 	// --- Buffer & Renderer Setup ---
 	outBuffer := buffer.NewOutputBuffer(initialRows, initialCols)
-	// The old renderer is incompatible, create the new SDL one
-	termRenderer := render.NewSDLRenderer(rendererSDL, font)
+	// Pass both fonts to the renderer
+	termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont)
 	defer termRenderer.Destroy() // Defer cleanup of the glyph cache
 
 	// --- Input/Output Goroutines ---

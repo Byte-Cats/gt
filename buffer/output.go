@@ -5,6 +5,8 @@ import (
 	"strconv"
 	// "strings"
 	"unicode/utf8" // Needed for rune handling
+
+	"github.com/mattn/go-runewidth"
 )
 
 // --- Color Types ---
@@ -70,20 +72,21 @@ const defaultMaxScrollback = 1000 // Default number of lines to keep in scrollba
 // Cell represents a single character cell on the terminal screen
 type Cell struct {
 	Char        rune
-	Fg          int // Standard code (30-39) or 256 index (0-255) or RGB (packed?)
-	Bg          int // Standard code (40-49) or 256 index (0-255) or RGB (packed?)
+	Width       int // 0=Continuation of wide char, 1=Standard, 2=Start of wide char
+	Fg          int
+	Bg          int
 	FgColorType string
 	BgColorType string
 	Bold        bool
 	Underline   bool
 	Reverse     bool
-	// TODO: Add other attributes
 }
 
 // newDefaultCell creates a cell with default attributes.
 func newDefaultCell() Cell {
 	return Cell{
 		Char:        ' ',
+		Width:       1, // Default width
 		Fg:          defaultFgColor,
 		Bg:          defaultBgColor,
 		FgColorType: defaultColorType,
@@ -235,21 +238,26 @@ func (o *Output) handleGroundChar(r rune) {
 }
 
 // putChar places a character at the current cursor position and advances the cursor,
-// applying the current attributes.
+// applying the current attributes and handling rune width.
 func (o *Output) putChar(r rune) {
-	// Basic implementation: Clamp cursor first
+	// Clamp cursor Y first
 	if o.cursorY < 0 {
 		o.cursorY = 0
 	}
 	if o.cursorY >= o.rows {
 		o.cursorY = o.rows - 1
 	}
-	if o.cursorX < 0 {
-		o.cursorX = 0
+
+	rWidth := runewidth.RuneWidth(r)
+	if rWidth == 0 {
+		// Handle zero-width characters (e.g., combining marks)
+		// TODO: Ideally, apply to the character in the *previous* cell.
+		// For now, just ignore them to avoid breaking layout.
+		return
 	}
 
-	if o.cursorX >= o.cols {
-		// Wrap line
+	// Check for line wrap *before* placing character, considering its width
+	if o.cursorX+rWidth > o.cols {
 		o.cursorX = 0
 		o.cursorY++
 		if o.cursorY >= o.rows {
@@ -258,9 +266,15 @@ func (o *Output) putChar(r rune) {
 		}
 	}
 
+	// Clamp cursor X after potential wrap
+	if o.cursorX < 0 {
+		o.cursorX = 0
+	}
+
 	// Place character applying current attributes
 	o.grid[o.cursorY][o.cursorX] = Cell{
 		Char:        r,
+		Width:       rWidth,
 		Fg:          o.currentFg,
 		Bg:          o.currentBg,
 		FgColorType: o.currentFgColorType,
@@ -269,7 +283,24 @@ func (o *Output) putChar(r rune) {
 		Underline:   o.currentUnderline,
 		Reverse:     o.currentReverse,
 	}
-	o.cursorX++
+
+	// If it was a wide character, mark the next cell as a continuation
+	if rWidth == 2 {
+		if o.cursorX+1 < o.cols {
+			o.grid[o.cursorY][o.cursorX+1] = Cell{
+				Char:  ' ', // Or a special marker?
+				Width: 0,   // Mark as continuation
+				// Inherit background color? Usually yes.
+				Bg:          o.currentBg,
+				BgColorType: o.currentBgColorType,
+				// Other attributes usually default for continuation cell
+				Fg:          defaultFgColor,
+				FgColorType: defaultColorType,
+			}
+		}
+	}
+
+	o.cursorX += rWidth // Advance cursor by rune width
 }
 
 // enterState transitions the parser to a new state, resetting intermediates.
@@ -445,28 +476,52 @@ func (o *Output) handleSgr() {
 
 		// Extended Colors (38 / 48)
 		case SetFgColorExt: // Set foreground color (extended)
-			if i+2 < len(o.params) { // Need mode and color value/rgb
+			// Need at least mode + 1 value (256) or mode + 3 values (truecolor)
+			if i+1 < len(o.params) {
 				mode := o.params[i+1]
-				if mode == ExtColorMode256 {
+				if mode == ExtColorMode256 && i+2 < len(o.params) {
 					colorIndex := o.params[i+2]
 					if colorIndex >= 0 && colorIndex <= 255 {
 						o.currentFg = colorIndex
 						o.currentFgColorType = ColorType256
 					}
-					i += 2 // Consume mode and color index parameters
-				} // TODO: Add mode == ExtColorModeTrue for truecolor
+					i += 2 // Consumed mode and index
+				} else if mode == ExtColorModeTrue && i+4 < len(o.params) {
+					r := o.params[i+2]
+					g := o.params[i+3]
+					b := o.params[i+4]
+					if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
+						o.currentFg = (r << 16) | (g << 8) | b // Pack RGB
+						o.currentFgColorType = ColorTypeTrue
+					}
+					i += 4 // Consumed mode, r, g, b
+				} else {
+					// Invalid extended color mode or missing params, consume only mode
+					i += 1
+				}
 			}
 		case SetBgColorExt: // Set background color (extended)
-			if i+2 < len(o.params) {
+			if i+1 < len(o.params) {
 				mode := o.params[i+1]
-				if mode == ExtColorMode256 {
+				if mode == ExtColorMode256 && i+2 < len(o.params) {
 					colorIndex := o.params[i+2]
 					if colorIndex >= 0 && colorIndex <= 255 {
 						o.currentBg = colorIndex
 						o.currentBgColorType = ColorType256
 					}
 					i += 2
-				} // TODO: Add mode == ExtColorModeTrue for truecolor
+				} else if mode == ExtColorModeTrue && i+4 < len(o.params) {
+					r := o.params[i+2]
+					g := o.params[i+3]
+					b := o.params[i+4]
+					if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
+						o.currentBg = (r << 16) | (g << 8) | b // Pack RGB
+						o.currentBgColorType = ColorTypeTrue
+					}
+					i += 4
+				} else {
+					i += 1
+				}
 			}
 
 		// TODO: Handle 256-color and true-color modes (e.g., 38;5;n, 48;5;n, 38;2;r;g;b, 48;2;r;g;b)
