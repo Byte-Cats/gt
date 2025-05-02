@@ -6,7 +6,10 @@ import (
 	"image"
 	"image/draw" // Standard Go draw package
 	"log"
+	"strconv"
 	"unsafe"
+
+	"gt/config"
 
 	"github.com/veandco/go-sdl2/sdl"
 	"github.com/veandco/go-sdl2/ttf"
@@ -109,14 +112,15 @@ type SDLRenderer struct {
 	cellHeight        int
 
 	// Image scrolling state
-	imgScrollOffsetY     int32 // Current scroll offset for the scrollable image (pixels)
-	scrollableImgTargetH int32 // Target height of the last potentially scrollable image drawn
-	scrollableImgAnchorY int32 // Y position (pixels) where the top of the scrollable image is anchored
-	lastWindowHeightPx   int32 // Last known window height in pixels
+	imgScrollOffsetY     int32        // Current scroll offset for the scrollable image (pixels)
+	scrollableImgTargetH int32        // Target height of the last potentially scrollable image drawn
+	scrollableImgAnchorY int32        // Y position (pixels) where the top of the scrollable image is anchored
+	lastWindowHeightPx   int32        // Last known window height in pixels
+	theme                config.Theme // Store the loaded theme
 }
 
 // NewSDLRenderer creates a new renderer that draws to the given SDL renderer using the specified font.
-func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font) *SDLRenderer {
+func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme config.Theme) *SDLRenderer {
 	// Calculate glyph dimensions (assuming monospace)
 	// Error handling should ideally happen before calling NewSDLRenderer
 	width, height, _ := font.SizeUTF8("W")
@@ -143,6 +147,7 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font) *SDLRender
 		scrollableImgTargetH: -1, // Indicate no scrollable image initially
 		scrollableImgAnchorY: -1,
 		lastWindowHeightPx:   -1,
+		theme:                theme, // Store the theme
 	}
 }
 
@@ -190,6 +195,15 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 	// Keep track of areas covered by images in the current row
 	imageSkipUntil := make(map[int]int) // map[row] => skip rendering text cells until col X
+
+	// Clear with the theme background color
+	bgColor, err := parseHexColor(r.theme.Colors.Background)
+	if err != nil {
+		log.Printf("Warning: Invalid background color in theme '%s': %v. Using black.", r.theme.Colors.Background, err)
+		bgColor = sdl.Color{R: 0, G: 0, B: 0, A: 255}
+	}
+	r.renderer.SetDrawColor(bgColor.R, bgColor.G, bgColor.B, bgColor.A)
+	r.renderer.Clear()
 
 	for y := 0; y < rows; y++ {
 		skipUntilCol, rowHasSkip := imageSkipUntil[y]
@@ -377,8 +391,9 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				fgCode, bgCode = bgCode, fgCode
 				fgType, bgType = bgType, fgType
 			}
-			fgColorSDL := mapBufferColorToSDL(fgCode, fgType)
-			bgColorSDL := mapBufferColorToSDL(bgCode, bgType)
+			// Use theme-aware color mapping
+			fgColorSDL := r.mapBufferColorToSDL(fgCode, fgType)
+			bgColorSDL := r.mapBufferColorToSDL(bgCode, bgType)
 
 			// --- Draw Background ---
 			bgRect := sdl.Rect{
@@ -464,7 +479,12 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				W: int32(r.glyphWidth),
 				H: int32(r.glyphHeight),
 			}
-			cursorColor := sdl.Color{R: 255, G: 255, B: 255, A: 255}
+			// Use theme-aware cursor color
+			cursorColor, err := parseHexColor(r.theme.Colors.Cursor)
+			if err != nil {
+				log.Printf("Warning: Invalid cursor color in theme '%s': %v. Using white.", r.theme.Colors.Cursor, err)
+				cursorColor = sdl.Color{R: 255, G: 255, B: 255, A: 255}
+			}
 			r.renderer.SetDrawColor(cursorColor.R, cursorColor.G, cursorColor.B, cursorColor.A)
 			r.renderer.FillRect(&cursorRect)
 		}
@@ -515,28 +535,115 @@ func imageToSurface(img image.Image) (*sdl.Surface, error) {
 	return surface, nil
 }
 
-// mapBufferColorToSDL converts buffer color codes/indices to SDL colors based on type.
-func mapBufferColorToSDL(value int, colorType string) sdl.Color {
+// parseHexColor converts a hex color string (e.g., "#RRGGBB") to sdl.Color.
+func parseHexColor(s string) (sdl.Color, error) {
+	if len(s) != 7 || s[0] != '#' {
+		return sdl.Color{}, fmt.Errorf("invalid hex color format: %s", s)
+	}
+	r, errR := strconv.ParseUint(s[1:3], 16, 8)
+	g, errG := strconv.ParseUint(s[3:5], 16, 8)
+	b, errB := strconv.ParseUint(s[5:7], 16, 8)
+	if errR != nil || errG != nil || errB != nil {
+		return sdl.Color{}, fmt.Errorf("invalid hex value in color: %s", s)
+	}
+	return sdl.Color{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}, nil
+}
+
+// mapBufferColorToSDL converts buffer color codes/indices to SDL colors based on type and theme.
+func (r *SDLRenderer) mapBufferColorToSDL(value int, colorType string) sdl.Color {
+	defaultFgColor, err := parseHexColor(r.theme.Colors.Foreground)
+	if err != nil {
+		defaultFgColor = sdl.Color{R: 204, G: 204, B: 204, A: 255} // Fallback
+	}
+	defaultBgColor, err := parseHexColor(r.theme.Colors.Background)
+	if err != nil {
+		defaultBgColor = sdl.Color{R: 0, G: 0, B: 0, A: 255} // Fallback
+	}
+
 	switch colorType {
 	case buffer.ColorTypeStandard:
-		// Handle default codes
+		// Handle default codes using theme
 		if value == buffer.FgDefault {
-			return sdl.Color{R: 204, G: 204, B: 204, A: 255} // Default FG
+			return defaultFgColor
 		}
 		if value == buffer.BgDefault {
-			return sdl.Color{R: 0, G: 0, B: 0, A: 255} // Default BG
+			return defaultBgColor
 		}
-		// Map standard 16 color codes (30-37, 40-47) - Assume bright codes map to bright colors if added later
+
+		// Map standard 16 color codes (30-37 FG, 40-47 BG)
 		var index int
-		if value >= buffer.BgBlack {
+		var isBg bool
+		if value >= buffer.BgBlack && value <= buffer.BgWhite {
 			index = value - buffer.BgBlack
-		} else {
+			isBg = true
+		} else if value >= buffer.FgBlack && value <= buffer.FgWhite {
 			index = value - buffer.FgBlack
+		} else if value >= buffer.BgBrightBlack && value <= buffer.BgBrightWhite { // Handle bright BG colors 100-107
+			index = value - buffer.BgBrightBlack + 8 // Map 100-107 to 8-15
+			isBg = true
+		} else if value >= buffer.FgBrightBlack && value <= buffer.FgBrightWhite { // Handle bright FG colors 90-97
+			index = value - buffer.FgBrightBlack + 8 // Map 90-97 to 8-15
+		} else {
+			// Unknown standard code, return default fg/bg
+			if isBg {
+				return defaultBgColor
+			} else {
+				return defaultFgColor
+			}
 		}
-		if index >= 0 && index < 16 {
-			// Use first 16 entries of the 256 palette for standard/bright mapping
-			return xterm256Palette[index]
+
+		// Use theme colors for the 16 ANSI colors
+		var hexColor string
+		switch index {
+		case 0:
+			hexColor = r.theme.Colors.Black
+		case 1:
+			hexColor = r.theme.Colors.Red
+		case 2:
+			hexColor = r.theme.Colors.Green
+		case 3:
+			hexColor = r.theme.Colors.Yellow
+		case 4:
+			hexColor = r.theme.Colors.Blue
+		case 5:
+			hexColor = r.theme.Colors.Magenta
+		case 6:
+			hexColor = r.theme.Colors.Cyan
+		case 7:
+			hexColor = r.theme.Colors.White
+		case 8:
+			hexColor = r.theme.Colors.BrightBlack
+		case 9:
+			hexColor = r.theme.Colors.BrightRed
+		case 10:
+			hexColor = r.theme.Colors.BrightGreen
+		case 11:
+			hexColor = r.theme.Colors.BrightYellow
+		case 12:
+			hexColor = r.theme.Colors.BrightBlue
+		case 13:
+			hexColor = r.theme.Colors.BrightMagenta
+		case 14:
+			hexColor = r.theme.Colors.BrightCyan
+		case 15:
+			hexColor = r.theme.Colors.BrightWhite
+		default:
+			if isBg {
+				return defaultBgColor
+			} else {
+				return defaultFgColor
+			}
 		}
+		sdlCol, err := parseHexColor(hexColor)
+		if err != nil {
+			log.Printf("Warning: Invalid theme color for index %d ('%s'): %v", index, hexColor, err)
+			if isBg {
+				return defaultBgColor
+			} else {
+				return defaultFgColor
+			}
+		}
+		return sdlCol
 
 	case buffer.ColorType256:
 		if value >= 0 && value <= 255 {
@@ -552,7 +659,7 @@ func mapBufferColorToSDL(value int, colorType string) sdl.Color {
 	}
 
 	// Fallback / Unknown: return default foreground color
-	return sdl.Color{R: 204, G: 204, B: 204, A: 255}
+	return defaultFgColor
 }
 
 // ClearScreen is no longer needed here as SDL clearing is handled in main loop.

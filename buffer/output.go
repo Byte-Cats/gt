@@ -55,6 +55,25 @@ const (
 	BgWhite   = 47
 	BgDefault = 49
 
+	// Bright Colors (SGR codes 90-97 FG, 100-107 BG)
+	FgBrightBlack   = 90
+	FgBrightRed     = 91
+	FgBrightGreen   = 92
+	FgBrightYellow  = 93
+	FgBrightBlue    = 94
+	FgBrightMagenta = 95
+	FgBrightCyan    = 96
+	FgBrightWhite   = 97
+
+	BgBrightBlack   = 100
+	BgBrightRed     = 101
+	BgBrightGreen   = 102
+	BgBrightYellow  = 103
+	BgBrightBlue    = 104
+	BgBrightMagenta = 105
+	BgBrightCyan    = 106
+	BgBrightWhite   = 107
+
 	// Extended color codes
 	SetFgColorExt    = 38
 	SetBgColorExt    = 48

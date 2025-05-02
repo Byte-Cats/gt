@@ -2,6 +2,7 @@ package main
 
 import (
 	"gt/buffer"
+	"gt/config" // Import config package
 	"gt/render" // Will be refactored later
 	"io"
 	"log"
@@ -101,8 +102,17 @@ func main() {
 	// --- Buffer & Renderer Setup ---
 	outBuffer := buffer.NewOutputBuffer(initialRows, initialCols)
 	// Pass both fonts to the renderer
-	termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont)
-	defer termRenderer.Destroy() // Defer cleanup of the glyph cache
+	// termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont)
+	// defer termRenderer.Destroy() // Defer cleanup of the glyph cache
+
+	// Load the theme
+	theme := config.LoadTheme()
+	// Pass theme to NewSDLRenderer (next step)
+	// _ = theme // Avoid unused variable error for now
+
+	// Create renderer with theme
+	termRenderer := render.NewSDLRenderer(rendererSDL, font, boldFont, theme)
+	defer termRenderer.Destroy()
 
 	// --- Input/Output Goroutines ---
 	// PTY Output -> Buffer
