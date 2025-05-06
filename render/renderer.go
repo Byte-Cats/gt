@@ -6,8 +6,10 @@ import (
 	"image"
 	"image/draw" // Standard Go draw package
 	"log"
+	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"gt/config"
@@ -108,6 +110,7 @@ type SDLRenderer struct {
 	glyphHeight       int
 	glyphCache        map[glyphCacheKey]*sdl.Texture
 	imageTextureCache map[imageCacheKey]*sdl.Texture // Cache for image textures
+	noiseTexture      *sdl.Texture                   // For subtle background noise
 	renderer          *sdl.Renderer
 	cellWidth         int
 	cellHeight        int
@@ -137,6 +140,29 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme conf
 	}
 	height = font.Height() // This is often the most reliable
 
+	// Initialize random seed for noise generation
+	rand.Seed(time.Now().UnixNano())
+
+	// --- Create Noise Texture (if enabled) ---
+	var noiseTex *sdl.Texture
+	if theme.Noise.Enabled {
+		noiseTex, err = createNoiseTexture(renderer, 64, 64) // Create a 64x64 noise texture
+		if err != nil {
+			log.Printf("Warning: Failed to create noise texture: %v", err)
+			noiseTex = nil // Proceed without noise if creation fails
+		} else if noiseTex != nil {
+			// Apply opacity (alpha modulation)
+			noiseOpacity := uint8(theme.Noise.Opacity * 255)
+			if err := noiseTex.SetAlphaMod(noiseOpacity); err != nil {
+				log.Printf("Warning: Failed to set alpha modulation on noise texture: %v", err)
+			}
+			if err := noiseTex.SetBlendMode(sdl.BLENDMODE_BLEND); err != nil {
+				log.Printf("Warning: Failed to set blend mode on noise texture: %v", err)
+			}
+			log.Printf("Created noise texture with opacity %d/255", noiseOpacity)
+		}
+	}
+
 	return &SDLRenderer{
 		sdlRenderer:       renderer,
 		font:              font,
@@ -145,6 +171,7 @@ func NewSDLRenderer(renderer *sdl.Renderer, font, boldFont *ttf.Font, theme conf
 		glyphHeight:       height,
 		glyphCache:        make(map[glyphCacheKey]*sdl.Texture),
 		imageTextureCache: make(map[imageCacheKey]*sdl.Texture), // Initialize image cache
+		noiseTexture:      noiseTex,                             // Store the noise texture
 		renderer:          renderer,
 		cellWidth:         width,
 		cellHeight:        height,
@@ -171,6 +198,10 @@ func (r *SDLRenderer) Destroy() {
 	// Destroy cached image textures
 	for _, texture := range r.imageTextureCache { // Iterate over the new cache type
 		texture.Destroy()
+	}
+	// Destroy noise texture
+	if r.noiseTexture != nil {
+		r.noiseTexture.Destroy()
 	}
 	// Destroy fonts
 	r.glyphCache = nil
@@ -209,6 +240,122 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		}
 	} else {
 		r.drawSolidBackground(ww, wh, r.topPaddingPx)
+	}
+
+	// --- Draw Noise Texture (if enabled and created) ---
+	if r.noiseTexture != nil && r.theme.Noise.Enabled {
+		// Ensure blend mode is set for the renderer (might be redundant if texture has it, but good practice)
+		r.renderer.SetDrawBlendMode(sdl.BLENDMODE_BLEND)
+
+		drawableContentY := int32(r.topPaddingPx)
+		drawableContentH := wh - drawableContentY
+		if drawableContentH < 0 {
+			drawableContentH = 0
+		}
+
+		_, _, noiseTexW, noiseTexH, _ := r.noiseTexture.Query()
+
+		if noiseTexW > 0 && noiseTexH > 0 && drawableContentH > 0 {
+			for tileY := int32(0); tileY*noiseTexH < drawableContentH; tileY++ {
+				for tileX := int32(0); tileX*noiseTexW < ww; tileX++ {
+					dstRect := sdl.Rect{
+						X: tileX * noiseTexW,
+						Y: drawableContentY + (tileY * noiseTexH),
+						W: noiseTexW,
+						H: noiseTexH,
+					}
+					// Clip the noise tile to the drawable area if it extends beyond
+					if dstRect.X+dstRect.W > ww {
+						dstRect.W = ww - dstRect.X
+					}
+					if dstRect.Y+dstRect.H > wh { // Compare with wh (total window height)
+						dstRect.H = wh - dstRect.Y
+					}
+					if dstRect.W > 0 && dstRect.H > 0 {
+						r.renderer.Copy(r.noiseTexture, nil, &dstRect)
+					}
+				}
+			}
+		}
+		// It's generally good to reset blend mode if other operations don't expect it,
+		// but for this terminal, BLENDMODE_BLEND is likely fine for subsequent text/cursor drawing.
+		// r.renderer.SetDrawBlendMode(sdl.BLENDMODE_NONE) // Optionally reset
+	}
+
+	// --- Draw Inner Border/Shadow Effect (if enabled) ---
+	if r.theme.Border.Enabled && r.theme.Border.Thickness > 0 {
+		r.renderer.SetDrawBlendMode(sdl.BLENDMODE_BLEND) // Ensure blending is on
+
+		drawableContentX := int32(0)
+		drawableContentY := int32(r.topPaddingPx)
+		drawableContentW := ww
+		drawableContentH := wh - drawableContentY
+		if drawableContentH < 0 {
+			drawableContentH = 0
+		}
+
+		thickness := int32(r.theme.Border.Thickness)
+
+		// Parse Highlight Color
+		hlColor, errHl := parseHexColor(r.theme.Border.HighlightColor)
+		if errHl != nil {
+			log.Printf("Warning: Invalid border highlight color '%s': %v. Skipping highlight.", r.theme.Border.HighlightColor, errHl)
+		} else {
+			hlColor.A = uint8(r.theme.Border.HighlightOpacity * 255) // Apply opacity
+			r.renderer.SetDrawColor(hlColor.R, hlColor.G, hlColor.B, hlColor.A)
+
+			// Top highlight line (inside content area)
+			if drawableContentH > 0 && thickness > 0 {
+				topRect := sdl.Rect{X: drawableContentX, Y: drawableContentY, W: drawableContentW, H: thickness}
+				r.renderer.FillRect(&topRect)
+			}
+			// Left highlight line (inside content area, below top highlight)
+			if drawableContentW > 0 && thickness > 0 {
+				leftRect := sdl.Rect{X: drawableContentX, Y: drawableContentY + thickness, W: thickness, H: drawableContentH - thickness}
+				if leftRect.H < 0 {
+					leftRect.H = 0
+				}
+				if leftRect.H > 0 {
+					r.renderer.FillRect(&leftRect)
+				}
+			}
+		}
+
+		// Parse Shadow Color
+		shColor, errSh := parseHexColor(r.theme.Border.ShadowColor)
+		if errSh != nil {
+			log.Printf("Warning: Invalid border shadow color '%s': %v. Skipping shadow.", r.theme.Border.ShadowColor, errSh)
+		} else {
+			shColor.A = uint8(r.theme.Border.ShadowOpacity * 255) // Apply opacity
+			r.renderer.SetDrawColor(shColor.R, shColor.G, shColor.B, shColor.A)
+
+			// Bottom shadow line (inside content area)
+			if drawableContentH > 0 && thickness > 0 {
+				bottomRect := sdl.Rect{X: drawableContentX, Y: drawableContentY + drawableContentH - thickness, W: drawableContentW, H: thickness}
+				if bottomRect.Y < drawableContentY {
+					bottomRect.Y = drawableContentY
+					bottomRect.H = drawableContentH
+				} // Clamp if too thick
+				if bottomRect.H > 0 {
+					r.renderer.FillRect(&bottomRect)
+				}
+			}
+			// Right shadow line (inside content area, above bottom shadow)
+			if drawableContentW > 0 && thickness > 0 {
+				rightRect := sdl.Rect{X: drawableContentX + drawableContentW - thickness, Y: drawableContentY, W: thickness, H: drawableContentH - thickness}
+				if rightRect.X < drawableContentX {
+					rightRect.X = drawableContentX
+					rightRect.W = drawableContentW
+				} // Clamp if too thick
+				if rightRect.H < 0 {
+					rightRect.H = 0
+				}
+				if rightRect.H > 0 {
+					r.renderer.FillRect(&rightRect)
+				}
+			}
+		}
+		// r.renderer.SetDrawBlendMode(sdl.BLENDMODE_NONE) // Optionally reset blend mode
 	}
 
 	// Reset scrollable image tracking for this frame.
@@ -641,7 +788,7 @@ func imageToSurface(img image.Image) (*sdl.Surface, error) {
 		return nil, fmt.Errorf("failed to create surface: %w", err)
 	}
 
-	surface.Lock()
+	surface.Lock() // Lock the surface before accessing pixels
 	pixels := surface.Pixels()
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
@@ -656,7 +803,7 @@ func imageToSurface(img image.Image) (*sdl.Surface, error) {
 			// SDL pixel order might vary by endianness! This assumes little-endian like x86.
 			// ARGB = [B G R A] in memory on little-endian? Check SDL docs!
 			// Let's assume standard RGBA packing for simplicity first, might need adjustment.
-			offset := (y*int(surface.Pitch) + x*4) // 4 bytes per pixel
+			offset := (y*int(surface.Pitch) + x*4) // Correct: y is int, surface.Pitch is int
 			if offset+3 < len(pixels) {
 				// Assuming ARGB8888 on little-endian = BGRA byte order? Let's try typical RGBA order. Need confirmation.
 				pixels[offset+0] = r8 // R
@@ -978,4 +1125,46 @@ func (r *SDLRenderer) ScrollImageHorizontal(deltaX int) bool {
 	}
 
 	return false // No change in scroll offset
+}
+
+// --- Helper function to create a procedural noise texture ---
+func createNoiseTexture(renderer *sdl.Renderer, width, height int32) (*sdl.Texture, error) {
+	texture, err := renderer.CreateTexture(sdl.PIXELFORMAT_RGBA8888, sdl.TEXTUREACCESS_STREAMING, width, height)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create noise texture: %w", err)
+	}
+
+	// It's important to set the blend mode for the texture itself if you want its alpha to be used correctly during copy
+	if err := texture.SetBlendMode(sdl.BLENDMODE_BLEND); err != nil {
+		texture.Destroy() // Clean up if setting blend mode fails
+		return nil, fmt.Errorf("failed to set blend mode on noise texture: %w", err)
+	}
+
+	pixels, pitch, err := texture.Lock(nil)
+	if err != nil {
+		texture.Destroy() // Clean up
+		return nil, fmt.Errorf("failed to lock noise texture: %w", err)
+	}
+
+	bytesPerPixel := 4 // Assuming RGBA8888
+	for y := int32(0); y < height; y++ {
+		for x := int32(0); x < width; x++ {
+			gray := uint8(rand.Intn(256)) // Simple random noise
+			// offset calculation fixed: cast pitch to int32, ensure correct byte offset
+			offset := (y * int32(pitch)) + (x * int32(bytesPerPixel))
+			// Bounds check for pixel slice access
+			if offset+int32(bytesPerPixel-1) < int32(len(pixels)) {
+				pixels[offset+0] = gray // R
+				pixels[offset+1] = gray // G
+				pixels[offset+2] = gray // B
+				pixels[offset+3] = 255  // Alpha of the noise pixel itself (texture's global alpha is set by SetAlphaMod)
+			} else {
+				// This should ideally not happen if width, height, and pitch are correct
+				log.Printf("Warning: Noise texture pixel access out of bounds at (%d, %d), offset %d", x, y, offset)
+			}
+		}
+	}
+
+	texture.Unlock()
+	return texture, nil
 }

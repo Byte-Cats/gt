@@ -106,7 +106,7 @@ func runApp() error {
 	log.Printf("[Metrics] font.SizeUTF8('W') -> Width: %d, Height: %d", glyphWidth, glyphHeight)
 	log.Printf("[Metrics] font.Height() -> Height: %d", fontHeightFromHeightFunc)
 	// Use font.Height() for consistency with renderer? Let's try it.
-	glyphHeight = fontHeightFromHeightFunc
+	glyphHeight = fontHeightFromHeightFunc // Ensure glyphHeight is set to the actual font height used by renderer
 	log.Printf("[Metrics] Using glyphHeight = %d for PTY calculation", glyphHeight)
 	// --- END DEBUG LOG ---
 
@@ -141,8 +141,20 @@ func runApp() error {
 	}
 	defer window.Destroy()
 
+	// Apply theme opacity if set and valid
+	if theme.WindowOpacity > 0 && theme.WindowOpacity < 1.0 {
+		err = window.SetWindowOpacity(theme.WindowOpacity)
+		if err != nil {
+			log.Printf("Warning: Failed to set window opacity to %.2f: %v", theme.WindowOpacity, err)
+			// Continue even if opacity setting fails, as it might not be supported on all platforms/WMs
+		} else {
+			log.Printf("Set window opacity to %.2f", theme.WindowOpacity)
+		}
+	}
+
 	// Call platform-specific window adjustments and get top padding
 	topPadding := customizeWindow(window)
+	log.Printf("[WindowSetup] Top padding from customizeWindow: %dpx", topPadding)
 
 	rendererSDL, err := sdl.CreateRenderer(window, -1, sdl.RENDERER_ACCELERATED)
 	if err != nil {
@@ -165,9 +177,15 @@ func runApp() error {
 	if glyphWidth <= 0 || glyphHeight <= 0 {
 		return fmt.Errorf("invalid glyph dimensions: %dx%d", glyphWidth, glyphHeight)
 	}
+	drawableContentHeight := int(drawableH) - topPadding
+	// Ensure effective content height is a multiple of glyphHeight
+	effectiveContentHeight := drawableContentHeight - (drawableContentHeight % glyphHeight)
 	initialCols := int(drawableW) / glyphWidth
-	// Adjust height calculation to account for top padding
-	initialRows := (int(drawableH) - topPadding) / glyphHeight
+	initialRows := effectiveContentHeight / glyphHeight
+
+	log.Printf("[WindowSetup] Initial PTY Calc: DrawableH=%d, TopPadding=%d, GlyphHeight=%d, CalculatedContentH=%d, EffectiveContentH=%d => Rows=%d, Cols=%d",
+		drawableH, topPadding, glyphHeight, drawableContentHeight, effectiveContentHeight, initialRows, initialCols)
+
 	if initialCols <= 0 {
 		initialCols = 80
 	} // Fallback if calculation yields zero/negative
@@ -260,9 +278,14 @@ func runApp() error {
 						log.Printf("Window Resized Event. New Drawable Size: %dx%d", newDrawableW, newDrawableH)
 
 						// Recalculate cols/rows based on new *drawable* size and glyph *pixel* size
+						newDrawableContentHeight := int(newDrawableH) - topPadding
+						// Ensure effective content height is a multiple of glyphHeight
+						effectiveNewContentHeight := newDrawableContentHeight - (newDrawableContentHeight % glyphHeight)
 						newCols := int(newDrawableW) / glyphWidth
-						// Adjust height for padding
-						newRows := (int(newDrawableH) - topPadding) / glyphHeight
+						newRows := effectiveNewContentHeight / glyphHeight
+
+						log.Printf("[WindowResize] PTY Calc: NewDrawableH=%d, TopPadding=%d, GlyphHeight=%d, CalculatedContentH=%d, EffectiveContentH=%d => Rows=%d, Cols=%d",
+							newDrawableH, topPadding, glyphHeight, newDrawableContentHeight, effectiveNewContentHeight, newRows, newCols)
 
 						if newCols > 0 && newRows > 0 {
 							log.Printf("Recalculated Grid Size: %d cols, %d rows", newCols, newRows)

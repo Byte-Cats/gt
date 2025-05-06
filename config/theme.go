@@ -10,10 +10,13 @@ import (
 
 // Theme holds the color configuration for the terminal.
 type Theme struct {
-	FontPath string      `toml:"font_path,omitempty"`
-	FontSize int         `toml:"font_size,omitempty"`
-	Colors   ThemeColors `toml:"colors"`
-	Gradient Gradient    `toml:"gradient,omitempty"`
+	FontPath      string       `toml:"font_path,omitempty"`
+	FontSize      int          `toml:"font_size,omitempty"`
+	WindowOpacity float32      `toml:"window_opacity,omitempty"`
+	Colors        ThemeColors  `toml:"colors"`
+	Gradient      Gradient     `toml:"gradient,omitempty"`
+	Noise         NoiseEffect  `toml:"noise_effect,omitempty"`
+	Border        BorderEffect `toml:"border_effect,omitempty"`
 	// TODO: Add gradient settings later
 }
 
@@ -50,11 +53,29 @@ type Gradient struct {
 	Direction  string `toml:"direction"` // "vertical" or "horizontal"
 }
 
+// NoiseEffect defines settings for a subtle background noise.
+type NoiseEffect struct {
+	Enabled bool    `toml:"enabled"`
+	Opacity float32 `toml:"opacity"` // 0.0 (transparent) to 1.0 (opaque)
+	// Future: Add Type (e.g., "monochrome", "color"), Density, etc.
+}
+
+// BorderEffect defines settings for inner highlights/shadows.
+type BorderEffect struct {
+	Enabled          bool    `toml:"enabled"`
+	Thickness        int     `toml:"thickness"`         // in pixels
+	HighlightColor   string  `toml:"highlight_color"`   // Hex color string (e.g., "#FFFFFF")
+	ShadowColor      string  `toml:"shadow_color"`      // Hex color string (e.g., "#000000")
+	HighlightOpacity float32 `toml:"highlight_opacity"` // 0.0 to 1.0
+	ShadowOpacity    float32 `toml:"shadow_opacity"`    // 0.0 to 1.0
+}
+
 // DefaultTheme provides sensible default colors.
 func DefaultTheme() Theme {
 	return Theme{
-		FontPath: "/System/Library/Fonts/Supplemental/SFMono-Regular.otf",
-		FontSize: 14,
+		FontPath:      "/System/Library/Fonts/Supplemental/SFMono-Regular.otf",
+		FontSize:      14,
+		WindowOpacity: 1.0,
 		Colors: ThemeColors{
 			Foreground:    "#cccccc", // Light gray
 			Background:    "#1e1e1e", // Dark gray
@@ -81,6 +102,18 @@ func DefaultTheme() Theme {
 			StartColor: "#303030",
 			EndColor:   "#101010",
 			Direction:  "vertical",
+		},
+		Noise: NoiseEffect{ // Default noise settings
+			Enabled: false,
+			Opacity: 0.05, // Very subtle by default
+		},
+		Border: BorderEffect{ // Default border/inner shadow settings
+			Enabled:          false,
+			Thickness:        1,
+			HighlightColor:   "#FFFFFF",
+			ShadowColor:      "#000000",
+			HighlightOpacity: 0.1,
+			ShadowOpacity:    0.1,
 		},
 	}
 }
@@ -121,8 +154,15 @@ func LoadTheme() Theme {
 	// Colors and Gradient are directly overridden by DecodeFile
 	theme.Colors = loadedTheme.Colors
 	theme.Gradient = loadedTheme.Gradient // Load gradient settings
+	theme.Noise = loadedTheme.Noise       // Load noise settings
+	theme.Border = loadedTheme.Border     // Load border settings
 
-	log.Printf("Loaded theme from %s (Font: %s, Size: %d)", configPath, theme.FontPath, theme.FontSize)
+	// Load WindowOpacity if present in the TOML, otherwise keep default
+	if loadedTheme.WindowOpacity > 0 && loadedTheme.WindowOpacity <= 1.0 { // Basic validation
+		theme.WindowOpacity = loadedTheme.WindowOpacity
+	}
+
+	log.Printf("Loaded theme from %s (Font: %s, Size: %d, Opacity: %.2f)", configPath, theme.FontPath, theme.FontSize, theme.WindowOpacity)
 	// TODO: Validate loaded color strings?
 	return theme
 }

@@ -1,0 +1,19 @@
+# config.toml - Configuration for gf TUI - Awesome Edition!
+
+[style]
+# Colors can be hex codes (#RRGGBB) or lipgloss named colors (e.g., "blue", "21", "hotpink")
+
+# Item Styles
+dir_color = "#87CEFA"      # LightSkyBlue
+file_color = "#D3D3D3"     # LightGray
+selected_prefix = "➜ "     # Using a different arrow
+selected_color = "#EE82EE" # Violet
+error_color = "#FF6347"    # Tomato Red
+
+# Layout Styles
+header_color = "#5F9EA0" # CadetBlue
+footer_color = "#777777" # Dim Gray
+
+# Border Styles (optional)
+border_color = "#FF00FF" # Fuchsia / Magenta
+border_type = "rounded"  # Options: single, double, rounded, thick, hidden

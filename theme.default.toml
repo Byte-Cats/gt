@@ -4,6 +4,7 @@
 # font_path = "/System/Library/Fonts/Menlo.ttc" # Keep Menlo for now
 font_path = "/Users/fource/Library/Fonts/SpaceMono-Regular.ttf" # Use SpaceMono from user library
 font_size = 28 # Increase font size
+window_opacity = 0.85 # Window opacity for frosted glass effect (0.0 to 1.0)
 
 [colors]
 foreground = "#f0e6d8" # Light Sand/Off-white
@@ -34,3 +35,17 @@ enabled = true
 start_color = "#1a2a4f" # Dark Midnight Blue (Night Sky)
 end_color = "#0b0d17"   # Very Dark Blue/Black (Deep Night)
 direction = "vertical"
+
+# Subtle background noise effect
+[noise_effect]
+  enabled = false
+  opacity = 0.05 # Opacity of the noise layer (0.0 to 1.0)
+
+# Inner border/shadow effect for a subtle 3D/glossy look
+[border_effect]
+  enabled = false
+  thickness = 1 # Thickness of the highlight/shadow lines in pixels
+  highlight_color = "#FFFFFF" # Color of the top/left highlight
+  shadow_color = "#000000"    # Color of the bottom/right shadow
+  highlight_opacity = 0.1   # Opacity of the highlight (0.0 to 1.0)
+  shadow_opacity = 0.1      # Opacity of the shadow (0.0 to 1.0)
