@@ -43,6 +43,9 @@ type ThemeColors struct {
 	BrightMagenta string `toml:"bright_magenta"`
 	BrightCyan    string `toml:"bright_cyan"`
 	BrightWhite   string `toml:"bright_white"`
+
+	SelectionBackground string `toml:"selection_background,omitempty"`
+	SelectionForeground string `toml:"selection_foreground,omitempty"`
 }
 
 // Gradient defines the background gradient settings.
@@ -77,25 +80,27 @@ func DefaultTheme() Theme {
 		FontSize:      14,
 		WindowOpacity: 1.0,
 		Colors: ThemeColors{
-			Foreground:    "#cccccc", // Light gray
-			Background:    "#1e1e1e", // Dark gray
-			Cursor:        "#ffffff", // White
-			Black:         "#000000",
-			Red:           "#cd3131",
-			Green:         "#0dbc79",
-			Yellow:        "#e5e510",
-			Blue:          "#2472c8",
-			Magenta:       "#bc3fbc",
-			Cyan:          "#11a8cd",
-			White:         "#e5e5e5",
-			BrightBlack:   "#666666",
-			BrightRed:     "#f14c4c",
-			BrightGreen:   "#23d18b",
-			BrightYellow:  "#f5f543",
-			BrightBlue:    "#3b8eea",
-			BrightMagenta: "#d670d6",
-			BrightCyan:    "#29b8db",
-			BrightWhite:   "#ffffff",
+			Foreground:          "#cccccc", // Light gray
+			Background:          "#1e1e1e", // Dark gray
+			Cursor:              "#ffffff", // White
+			Black:               "#000000",
+			Red:                 "#cd3131",
+			Green:               "#0dbc79",
+			Yellow:              "#e5e510",
+			Blue:                "#2472c8",
+			Magenta:             "#bc3fbc",
+			Cyan:                "#11a8cd",
+			White:               "#e5e5e5",
+			BrightBlack:         "#666666",
+			BrightRed:           "#f14c4c",
+			BrightGreen:         "#23d18b",
+			BrightYellow:        "#f5f543",
+			BrightBlue:          "#3b8eea",
+			BrightMagenta:       "#d670d6",
+			BrightCyan:          "#29b8db",
+			BrightWhite:         "#ffffff",
+			SelectionBackground: "#555555", // Default selection background (medium gray)
+			SelectionForeground: "#ffffff", // Default selection foreground (white)
 		},
 		Gradient: Gradient{
 			Enabled:    false,

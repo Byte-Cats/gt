@@ -1,0 +1,43 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>GT Futuristic Terminal Icon V8 (Enhanced Dot)</title>
+
+  <defs>
+    <!-- Clip path is now a 60x60 rounded rect, offset by 2,2 -->
+    <clipPath id="roundedCornersClip">
+      <rect x="2" y="2" width="60" height="60" rx="10" ry="10" /> <!-- Radius 10 -->
+    </clipPath>
+
+    <filter id="promptGlowEffect" x="-50%" y="-50%" width="200%" height="200%">
+      <!-- Blur the source graphic's alpha channel to create the glow shape -->
+      <feGaussianBlur in="SourceAlpha" stdDeviation="1.5" result="blur" />
+      <!-- Create a white color for the glow -->
+      <feFlood flood-color="#FFFFFF" flood-opacity="0.6" result="glowColor" />
+      <!-- Combine the glow color with the blurred shape -->
+      <feComposite in="glowColor" in2="blur" operator="in" result="coloredGlow" />
+      <!-- Merge the original graphic on top of the glow -->
+      <feMerge>
+        <feMergeNode in="coloredGlow" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Transparent overall background for the SVG canvas -->
+  <!-- The actual icon background is drawn next and clipped -->
+
+  <!-- Main dark background, inset to 60x60 and clipped -->
+  <rect x="2" y="2" width="60" height="60" fill="#0b0d17" clip-path="url(#roundedCornersClip)" />
+
+  <!-- Group for icon elements, clipped to the same inset rounded rectangle -->
+  <g clip-path="url(#roundedCornersClip)">
+    <!-- Central darker circle element (coordinates are absolute to viewBox) -->
+    <circle cx="32" cy="32" r="21" fill="#402828" /> <!-- Dark, desaturated red/brown -->
+
+    <!-- ">" prompt symbol with glow (coordinates are absolute to viewBox) -->
+    <!-- Path: Base at x=28, y from 24 to 40 (height 16). Tip at x=42, y=32. -->
+    <path d="M 28 24 L 42 32 L 28 40 Z" fill="#67CDF0" filter="url(#promptGlowEffect)" />
+
+    <!-- Small "status indicator" light - Radius increased -->
+    <circle cx="32" cy="50" r="3" fill="#888888" /> <!-- Radius 3 -->
+  </g>
+</svg> 

@@ -92,6 +92,7 @@ type glyphCacheKey struct {
 	fg          int
 	fgColorType string
 	bold        bool
+	isSelected  bool // Added for selection state
 }
 
 // imageCacheKey is the key for the image texture cache.
@@ -209,34 +210,31 @@ func (r *SDLRenderer) Destroy() {
 }
 
 // Draw renders the current state of the buffer to the SDL renderer.
-func (r *SDLRenderer) Draw(buf *buffer.Output) error {
+func (r *SDLRenderer) Draw(buf *buffer.Output, selectionActive bool, selStartX, selStartY, selEndX, selEndY int) error {
 	// Get current window dimensions
 	ww, wh, err := r.renderer.GetOutputSize()
 	if err != nil {
 		log.Printf("Error getting renderer output size: %v", err)
-		// Use last known size or default?
 		ww = r.lastWindowWidthPx
 		wh = r.lastWindowHeightPx
 		if ww <= 0 {
 			ww = 800
-		} // Fallback
+		}
 		if wh <= 0 {
 			wh = 600
-		} // Fallback
+		}
 	}
-	r.lastWindowWidthPx = ww  // Store current window width
-	r.lastWindowHeightPx = wh // Store current window height
-	termW := ww               // Use pixel width for termW in calculations
-	termH := wh               // Use pixel height
+	r.lastWindowWidthPx = ww
+	r.lastWindowHeightPx = wh
+	termW := ww
+	termH := wh // termH is used in calculateTargetDimensions
 
-	// log.Printf("[Renderer.Draw] Using topPaddingPx: %d", r.topPaddingPx)
-
-	// Draw background (Solid or Gradient)
+	// Draw background
 	if r.theme.Gradient.Enabled {
 		err = r.drawGradientBackground(ww, wh, r.topPaddingPx)
 		if err != nil {
 			log.Printf("Error drawing gradient background: %v. Falling back to solid.", err)
-			r.drawSolidBackground(ww, wh, r.topPaddingPx) // Fallback to solid on error
+			r.drawSolidBackground(ww, wh, r.topPaddingPx)
 		}
 	} else {
 		r.drawSolidBackground(ww, wh, r.topPaddingPx)
@@ -244,74 +242,122 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 
 	// --- Draw Noise Texture (if enabled and created) ---
 	if r.noiseTexture != nil && r.theme.Noise.Enabled {
-		// Ensure blend mode is set for the renderer (might be redundant if texture has it, but good practice)
 		r.renderer.SetDrawBlendMode(sdl.BLENDMODE_BLEND)
-
 		drawableContentY := int32(r.topPaddingPx)
-		drawableContentH := wh - drawableContentY
-		if drawableContentH < 0 {
-			drawableContentH = 0
-		}
-
-		_, _, noiseTexW, noiseTexH, _ := r.noiseTexture.Query()
-
-		if noiseTexW > 0 && noiseTexH > 0 && drawableContentH > 0 {
-			for tileY := int32(0); tileY*noiseTexH < drawableContentH; tileY++ {
-				for tileX := int32(0); tileX*noiseTexW < ww; tileX++ {
-					dstRect := sdl.Rect{
-						X: tileX * noiseTexW,
-						Y: drawableContentY + (tileY * noiseTexH),
-						W: noiseTexW,
-						H: noiseTexH,
-					}
-					// Clip the noise tile to the drawable area if it extends beyond
-					if dstRect.X+dstRect.W > ww {
-						dstRect.W = ww - dstRect.X
-					}
-					if dstRect.Y+dstRect.H > wh { // Compare with wh (total window height)
-						dstRect.H = wh - dstRect.Y
-					}
-					if dstRect.W > 0 && dstRect.H > 0 {
-						r.renderer.Copy(r.noiseTexture, nil, &dstRect)
-					}
+		_, _, noiseTexW, noiseTexH, queryErr := r.noiseTexture.Query()
+		if queryErr != nil {
+			log.Printf("Warning: Failed to query noise texture: %v", queryErr)
+		} else if noiseTexW > 0 && noiseTexH > 0 {
+			for yTile := drawableContentY; yTile < wh; yTile += noiseTexH {
+				for xTile := int32(0); xTile < ww; xTile += noiseTexW {
+					r.renderer.Copy(r.noiseTexture, nil, &sdl.Rect{X: xTile, Y: yTile, W: noiseTexW, H: noiseTexH})
 				}
 			}
 		}
-		// It's generally good to reset blend mode if other operations don't expect it,
-		// but for this terminal, BLENDMODE_BLEND is likely fine for subsequent text/cursor drawing.
-		// r.renderer.SetDrawBlendMode(sdl.BLENDMODE_NONE) // Optionally reset
 	}
 
+	// Determine normalized selection rectangle (minX, minY, maxX, maxY) based on cell coordinates
+	normSelStartX, normSelEndX := selStartX, selEndX
+	if selStartX > selEndX {
+		normSelStartX, normSelEndX = selEndX, selStartX
+	}
+	normSelStartY, normSelEndY := selStartY, selEndY
+	if selStartY > selEndY {
+		normSelStartY, normSelEndY = selEndY, selStartY
+	}
+
+	// --- Start of the CORRECT rendering loop ---
+	grid := buf.GetVisibleGrid() // Use the existing method to get cell data
+	rows := len(grid)
+	cols := 0
+	if rows > 0 {
+		cols = len(grid[0])
+	}
+
+	// Clamp normalized selection coordinates to the actual grid dimensions
+	// This block is now correctly positioned AFTER rows and cols are defined.
+	clampedSelStartX := normSelStartX
+	if clampedSelStartX < 0 {
+		clampedSelStartX = 0
+	}
+	// For X-start, clamp to visible grid columns as starting off-screen doesn't usually make sense for start.
+	if clampedSelStartX >= cols && cols > 0 {
+		clampedSelStartX = cols - 1
+	}
+
+	clampedSelEndX := normSelEndX
+	if clampedSelEndX < 0 { // Ensure EndX is not negative
+		clampedSelEndX = 0
+	}
+	// For EndX, we are NOT clamping it to `cols - 1` here to allow selection to extend beyond visible columns.
+	// A more robust solution would clamp to actual logical line width from buffer, or a max buffer width.
+	// If normSelEndX is very large, it's up to subsequent logic to handle.
+
+	clampedSelStartY := normSelStartY
+	if clampedSelStartY < 0 {
+		clampedSelStartY = 0
+	}
+	// For Y-start, clamp to visible grid rows.
+	if clampedSelStartY >= rows && rows > 0 {
+		clampedSelStartY = rows - 1
+	}
+
+	clampedSelEndY := normSelEndY
+	if clampedSelEndY < 0 { // Ensure EndY is not negative
+		clampedSelEndY = 0
+	}
+	// For Y-end, clamp to visible grid rows.
+	if clampedSelEndY >= rows && rows > 0 {
+		clampedSelEndY = rows - 1
+	}
+
+	// Ensure start is not greater than end after clamping (can happen if selection was entirely outside)
+	// This is important if selection was entirely outside one or both axes.
+	if clampedSelStartX > clampedSelEndX && (selectionActive || (selStartX != selEndX)) {
+		// If an active selection ends up inverted after clamping X, it might mean it was fully outside.
+		// For now, just swap them. A more nuanced handling might be needed if selection start can be > end.
+		clampedSelStartX, clampedSelEndX = clampedSelEndX, clampedSelStartX
+	}
+	if clampedSelStartY > clampedSelEndY && (selectionActive || (selStartY != selEndY)) {
+		clampedSelStartY, clampedSelEndY = clampedSelEndY, clampedSelStartY
+	}
+
+	imageSkipUntil := make(map[int]int)
+
+	clipRect := sdl.Rect{X: 0, Y: int32(r.topPaddingPx), W: ww, H: wh - int32(r.topPaddingPx)}
+	if clipRect.H < 0 {
+		clipRect.H = 0
+	}
+	r.renderer.SetClipRect(&clipRect)
+
 	// --- Draw Inner Border/Shadow Effect (if enabled) ---
+	// This was moved from after cell rendering to before, to ensure cells draw on top of it.
+	// This also matches the original file structure more closely.
 	if r.theme.Border.Enabled && r.theme.Border.Thickness > 0 {
-		r.renderer.SetDrawBlendMode(sdl.BLENDMODE_BLEND) // Ensure blending is on
+		r.renderer.SetDrawBlendMode(sdl.BLENDMODE_BLEND)
 
 		drawableContentX := int32(0)
 		drawableContentY := int32(r.topPaddingPx)
 		drawableContentW := ww
-		drawableContentH := wh - drawableContentY
-		if drawableContentH < 0 {
-			drawableContentH = 0
+		innerDrawableContentHeight := wh - drawableContentY // Renamed to avoid conflict
+		if innerDrawableContentHeight < 0 {
+			innerDrawableContentHeight = 0
 		}
 
 		thickness := int32(r.theme.Border.Thickness)
 
-		// Parse Highlight Color
 		hlColor, errHl := parseHexColor(r.theme.Border.HighlightColor)
 		if errHl != nil {
 			log.Printf("Warning: Invalid border highlight color '%s': %v. Skipping highlight.", r.theme.Border.HighlightColor, errHl)
 		} else {
-			hlColor.A = uint8(r.theme.Border.HighlightOpacity * 255) // Apply opacity
+			hlColor.A = uint8(r.theme.Border.HighlightOpacity * 255)
 			r.renderer.SetDrawColor(hlColor.R, hlColor.G, hlColor.B, hlColor.A)
-
-			// Top highlight line (inside content area)
-			if drawableContentH > 0 && thickness > 0 {
+			if innerDrawableContentHeight > 0 && thickness > 0 {
 				topRect := sdl.Rect{X: drawableContentX, Y: drawableContentY, W: drawableContentW, H: thickness}
 				r.renderer.FillRect(&topRect)
 			}
-			// Left highlight line (inside content area, below top highlight)
 			if drawableContentW > 0 && thickness > 0 {
-				leftRect := sdl.Rect{X: drawableContentX, Y: drawableContentY + thickness, W: thickness, H: drawableContentH - thickness}
+				leftRect := sdl.Rect{X: drawableContentX, Y: drawableContentY + thickness, W: thickness, H: innerDrawableContentHeight - thickness}
 				if leftRect.H < 0 {
 					leftRect.H = 0
 				}
@@ -321,32 +367,28 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 			}
 		}
 
-		// Parse Shadow Color
 		shColor, errSh := parseHexColor(r.theme.Border.ShadowColor)
 		if errSh != nil {
 			log.Printf("Warning: Invalid border shadow color '%s': %v. Skipping shadow.", r.theme.Border.ShadowColor, errSh)
 		} else {
-			shColor.A = uint8(r.theme.Border.ShadowOpacity * 255) // Apply opacity
+			shColor.A = uint8(r.theme.Border.ShadowOpacity * 255)
 			r.renderer.SetDrawColor(shColor.R, shColor.G, shColor.B, shColor.A)
-
-			// Bottom shadow line (inside content area)
-			if drawableContentH > 0 && thickness > 0 {
-				bottomRect := sdl.Rect{X: drawableContentX, Y: drawableContentY + drawableContentH - thickness, W: drawableContentW, H: thickness}
+			if innerDrawableContentHeight > 0 && thickness > 0 {
+				bottomRect := sdl.Rect{X: drawableContentX, Y: drawableContentY + innerDrawableContentHeight - thickness, W: drawableContentW, H: thickness}
 				if bottomRect.Y < drawableContentY {
 					bottomRect.Y = drawableContentY
-					bottomRect.H = drawableContentH
-				} // Clamp if too thick
+					bottomRect.H = innerDrawableContentHeight
+				}
 				if bottomRect.H > 0 {
 					r.renderer.FillRect(&bottomRect)
 				}
 			}
-			// Right shadow line (inside content area, above bottom shadow)
 			if drawableContentW > 0 && thickness > 0 {
-				rightRect := sdl.Rect{X: drawableContentX + drawableContentW - thickness, Y: drawableContentY, W: thickness, H: drawableContentH - thickness}
+				rightRect := sdl.Rect{X: drawableContentX + drawableContentW - thickness, Y: drawableContentY, W: thickness, H: innerDrawableContentHeight - thickness}
 				if rightRect.X < drawableContentX {
 					rightRect.X = drawableContentX
 					rightRect.W = drawableContentW
-				} // Clamp if too thick
+				}
 				if rightRect.H < 0 {
 					rightRect.H = 0
 				}
@@ -355,32 +397,12 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				}
 			}
 		}
-		// r.renderer.SetDrawBlendMode(sdl.BLENDMODE_NONE) // Optionally reset blend mode
 	}
-
 	// Reset scrollable image tracking for this frame.
 	r.scrollableImgTargetW = -1
 	r.scrollableImgTargetH = -1
 	r.scrollableImgAnchorX = -1
 	r.scrollableImgAnchorY = -1
-	// Don't reset scroll offsets (imgScrollOffsetX, imgScrollOffsetY)
-
-	grid := buf.GetVisibleGrid()
-	rows := len(grid)
-	cols := 0
-	if rows > 0 {
-		cols = len(grid[0])
-	}
-
-	// Keep track of areas covered by images in the current row
-	imageSkipUntil := make(map[int]int) // map[row] => skip rendering text cells until col X
-
-	// Set clip rect for all cell/cursor/image drawing below padding
-	clipRect := sdl.Rect{X: 0, Y: int32(r.topPaddingPx), W: ww, H: wh - int32(r.topPaddingPx)}
-	if clipRect.H < 0 {
-		clipRect.H = 0
-	}
-	r.renderer.SetClipRect(&clipRect)
 
 	for y := 0; y < rows; y++ {
 		var skipUntilCol int
@@ -391,75 +413,69 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 		}
 
 		for x := 0; x < cols; x++ {
-			// Skip rendering if within an image area for this row
 			if rowHasSkip && x < skipUntilCol {
 				continue
 			}
 
 			cell := grid[y][x]
 
-			// Skip rendering standard continuation cells of wide characters
 			if cell.Width == 0 {
 				continue
 			}
 
-			// --- Check for and Render Image Placeholder ---
+			// --- Image Placeholder Rendering (Existing Logic) ---
 			if cell.IsImagePlaceholder {
 				imgKey := buffer.ImageKey{R: y, C: x}
-				log.Printf("Found image placeholder at [%d, %d]", y, x) // LOG 1
 				// Get image and its constraints
 				img, imgID, wConstraint, hConstraint, preserveAspect := buf.GetImage(imgKey)
 
 				if img != nil && imgID > 0 {
 					cacheKey := imageCacheKey{BufKey: imgKey, ImgID: imgID}
 					imgTexture, cached := r.imageTextureCache[cacheKey]
-					var err error // Declare err here to be accessible later
+					var imgErr error
 
 					if !cached {
-						log.Printf("   -> Image not in texture cache, creating...") // LOG 3
 						imgBounds := img.Bounds()
 						imgW, imgH := int32(imgBounds.Dx()), int32(imgBounds.Dy())
 						var surface *sdl.Surface
-
-						// Create an SDL surface based on the image type
 						switch imgData := img.(type) {
 						case *image.RGBA:
-							surface, err = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&imgData.Pix[0]), imgW, imgH, 32, int32(imgData.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
+							surface, imgErr = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&imgData.Pix[0]), imgW, imgH, 32, int32(imgData.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
 						case *image.NRGBA:
 							rgbaImg := image.NewRGBA(imgBounds)
 							draw.Draw(rgbaImg, imgBounds, imgData, imgBounds.Min, draw.Src)
-							surface, err = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&rgbaImg.Pix[0]), imgW, imgH, 32, int32(rgbaImg.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
+							surface, imgErr = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&rgbaImg.Pix[0]), imgW, imgH, 32, int32(rgbaImg.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
 						case *image.Gray:
-							surface, err = sdl.CreateRGBSurfaceWithFormat(0, imgW, imgH, 8, uint32(sdl.PIXELFORMAT_INDEX8))
-							if err == nil {
+							surface, imgErr = sdl.CreateRGBSurfaceWithFormat(0, imgW, imgH, 8, uint32(sdl.PIXELFORMAT_INDEX8))
+							if imgErr == nil {
 								var palette *sdl.Palette
-								palette, err = sdl.AllocPalette(256)
-								if err == nil {
+								palette, imgErr = sdl.AllocPalette(256)
+								if imgErr == nil {
 									paletteColors := make([]sdl.Color, 256)
 									for i := range paletteColors {
 										paletteColors[i] = sdl.Color{R: uint8(i), G: uint8(i), B: uint8(i), A: 255}
 									}
 									palette.SetColors(paletteColors)
 									surface.SetPalette(palette)
-									palette.Free()
+									palette.Free() // Free palette after setting it to surface
 									pixels := surface.Pixels()
 									copy(pixels, imgData.Pix)
 								}
 							}
 						case *image.Paletted:
-							surface, err = sdl.CreateRGBSurfaceWithFormat(0, imgW, imgH, 8, uint32(sdl.PIXELFORMAT_INDEX8))
-							if err == nil {
+							surface, imgErr = sdl.CreateRGBSurfaceWithFormat(0, imgW, imgH, 8, uint32(sdl.PIXELFORMAT_INDEX8))
+							if imgErr == nil {
 								var palette *sdl.Palette
-								palette, err = sdl.AllocPalette(len(imgData.Palette))
-								if err == nil {
+								palette, imgErr = sdl.AllocPalette(len(imgData.Palette))
+								if imgErr == nil {
 									paletteColors := make([]sdl.Color, len(imgData.Palette))
 									for i, c := range imgData.Palette {
-										r, g, b, a := c.RGBA()
-										paletteColors[i] = sdl.Color{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: uint8(a >> 8)}
+										rCol, gCol, bCol, aCol := c.RGBA()
+										paletteColors[i] = sdl.Color{R: uint8(rCol >> 8), G: uint8(gCol >> 8), B: uint8(bCol >> 8), A: uint8(aCol >> 8)}
 									}
 									palette.SetColors(paletteColors)
 									surface.SetPalette(palette)
-									palette.Free()
+									palette.Free() // Free palette after setting it to surface
 									pixels := surface.Pixels()
 									copy(pixels, imgData.Pix)
 								}
@@ -468,122 +484,100 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 							log.Printf("   -> Unsupported image type for direct surface creation: %T. Converting to RGBA.", imgData)
 							rgbaImg := image.NewRGBA(imgBounds)
 							draw.Draw(rgbaImg, imgBounds, imgData, imgBounds.Min, draw.Src)
-							surface, err = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&rgbaImg.Pix[0]), imgW, imgH, 32, int32(rgbaImg.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
+							surface, imgErr = sdl.CreateRGBSurfaceWithFormatFrom(unsafe.Pointer(&rgbaImg.Pix[0]), imgW, imgH, 32, int32(rgbaImg.Stride), uint32(sdl.PIXELFORMAT_RGBA32))
 						}
 
-						// Now create the texture from the surface (if surface creation was successful)
-						if err != nil {
-							log.Printf("   -> Failed to create surface from image: %v", err)
+						if imgErr != nil {
+							log.Printf("   -> Failed to create surface from image: %v", imgErr)
 							if surface != nil {
 								surface.Free()
 							}
 						} else if surface == nil {
 							log.Printf("   -> Surface is nil after image conversion attempts.")
 						} else {
-							log.Printf("   -> Created surface: %p (Format: %s)", surface, sdl.GetPixelFormatName(uint(surface.Format.Format))) // LOG 4
 							newTexture, texErr := r.renderer.CreateTextureFromSurface(surface)
 							surface.Free()
 							if texErr != nil {
 								log.Printf("   -> Failed to create texture from image surface: %v", texErr)
 							} else {
-								imgTexture = newTexture // Assign to the outer scope variable
+								imgTexture = newTexture
 								r.imageTextureCache[cacheKey] = imgTexture
-								log.Printf("   -> Created and cached image texture: %p (ID: %d)", imgTexture, imgID) // LOG 5
 							}
 						}
-					} else {
-						log.Printf("   -> Found cached image texture: %p (ID: %d)", imgTexture, imgID) // LOG 6
 					}
 
-					// Draw the texture if we have one (either cached or newly created)
 					if imgTexture != nil {
-						_, _, texW, texH, queryErr := imgTexture.Query()
-						if queryErr != nil {
-							log.Printf("   -> Error querying image texture: %v", queryErr)
+						_, _, texW, texH, queryErr_img := imgTexture.Query()
+						if queryErr_img != nil {
+							log.Printf("   -> Error querying image texture: %v", queryErr_img)
 						} else {
-							// Calculate target dimensions based on constraints (using termW and termH)
-							targetW, targetH := r.calculateTargetDimensions(
+							targetW_img, targetH_img := r.calculateTargetDimensions(
 								wConstraint, hConstraint, preserveAspect,
-								texW, texH, termW, termH) // Pass termH now
+								texW, texH, termW, termH)
 
-							// Store details if this image is potentially scrollable (horizontal or vertical)
-							windowVisibleWidth := termW // No horizontal padding assumed
+							windowVisibleWidth := termW
 							windowVisibleHeight := termH - int32(r.topPaddingPx)
 							if windowVisibleHeight < 0 {
 								windowVisibleHeight = 0
 							}
 
-							anchorX := int32(x * r.cellWidth)
-							anchorY := int32(y*r.cellHeight) + int32(r.topPaddingPx) // Anchor includes padding
+							anchorX_img := int32(x * r.cellWidth)
+							anchorY_img := int32(y*r.cellHeight) + int32(r.topPaddingPx)
 
-							if targetW > windowVisibleWidth {
-								r.scrollableImgTargetW = targetW
-								r.scrollableImgAnchorX = anchorX
-								maxScrollX := targetW - windowVisibleWidth
+							if targetW_img > windowVisibleWidth {
+								r.scrollableImgTargetW = targetW_img
+								r.scrollableImgAnchorX = anchorX_img
+								maxScrollX := targetW_img - windowVisibleWidth
 								if maxScrollX < 0 {
 									maxScrollX = 0
 								}
 								r.imgScrollOffsetX = max(0, min(r.imgScrollOffsetX, maxScrollX))
 							}
-							if targetH > windowVisibleHeight {
-								r.scrollableImgTargetH = targetH
-								r.scrollableImgAnchorY = anchorY
-								// Add cellHeight buffer to maxScrollY
-								maxScrollY := targetH - windowVisibleHeight + int32(r.cellHeight)
+							if targetH_img > windowVisibleHeight {
+								r.scrollableImgTargetH = targetH_img
+								r.scrollableImgAnchorY = anchorY_img
+								maxScrollY := targetH_img - windowVisibleHeight + int32(r.cellHeight)
 								if maxScrollY < 0 {
 									maxScrollY = 0
 								}
 								r.imgScrollOffsetY = max(0, min(r.imgScrollOffsetY, maxScrollY))
 							}
 
-							// Destination rect: position includes top padding AND scroll offsets
 							imgDstRect := sdl.Rect{
-								X: anchorX - r.imgScrollOffsetX, // APPLY HORIZONTAL SCROLL
-								Y: anchorY - r.imgScrollOffsetY, // APPLY VERTICAL SCROLL & PADDING
-								W: targetW,
-								H: targetH,
+								X: anchorX_img - r.imgScrollOffsetX,
+								Y: anchorY_img - r.imgScrollOffsetY,
+								W: targetW_img,
+								H: targetH_img,
 							}
-							log.Printf("   -> Drawing image texture at Dst=[%d, %d] W:%d H:%d (Anchor=[%d,%d], Pad=%d, Scroll=[%d,%d])",
-								imgDstRect.X, imgDstRect.Y, imgDstRect.W, imgDstRect.H,
-								r.scrollableImgAnchorX, r.scrollableImgAnchorY,
-								r.topPaddingPx, r.imgScrollOffsetX, r.imgScrollOffsetY)
 
-							// Clip rect is already set outside the loop
 							errCopy := r.renderer.Copy(imgTexture, nil, &imgDstRect)
-
-							// Reset clip rect (done after loop)
-							// r.renderer.SetClipRect(nil)
-
 							if errCopy != nil {
 								log.Printf("   -> Error copying image texture: %v", errCopy)
 							}
 
-							// Mark this cell as skipped for text rendering
-							colsToSkip := (targetW + int32(r.cellWidth) - 1) / int32(r.cellWidth) // Round up based on target size
-							rowsToSkip := (targetH + int32(r.cellHeight) - 1) / int32(r.cellHeight)
+							colsToSkip := (targetW_img + int32(r.cellWidth) - 1) / int32(r.cellWidth)
+							rowsToSkip := (targetH_img + int32(r.cellHeight) - 1) / int32(r.cellHeight)
 							for rowOffset := 0; rowOffset < int(rowsToSkip); rowOffset++ {
 								currentSkipRow := y + rowOffset
 								skipEndCol := x + int(colsToSkip)
 								if existingSkip, ok := imageSkipUntil[currentSkipRow]; ok {
-									if skipEndCol > existingSkip { // Extend skip if this image goes further
+									if skipEndCol > existingSkip {
 										imageSkipUntil[currentSkipRow] = skipEndCol
 									}
 								} else {
 									imageSkipUntil[currentSkipRow] = skipEndCol
 								}
 							}
-							// Restart inner loop to respect the new skip calculation immediately
 							skipUntilCol = imageSkipUntil[y]
 							rowHasSkip = true
-							continue
+							continue // Skip text rendering for this cell
 						}
 					}
-				} else {
-					log.Printf("  -> Image retrieved from buffer is nil") // LOG 10
 				}
 			}
+			// --- End of Image Placeholder Rendering ---
 
-			// --- Determine Colors & Draw Background ---
+			// --- Cell/Text Rendering ---
 			fgCode := cell.Fg
 			bgCode := cell.Bg
 			fgType := cell.FgColorType
@@ -593,87 +587,141 @@ func (r *SDLRenderer) Draw(buf *buffer.Output) error {
 				fgCode, bgCode = bgCode, fgCode
 				fgType, bgType = bgType, fgType
 			}
-			// Use theme-aware color mapping
+
 			fgColorSDL := r.mapBufferColorToSDL(fgCode, fgType)
 			bgColorSDL := r.mapBufferColorToSDL(bgCode, bgType)
 
-			// --- Draw Background --- APPLY PADDING
+			// --- Selection Highlighting ---
+			isSelected := false
+			// y is row (outer loop), x is col (inner loop)
+			if selectionActive || (selStartX != selEndX || selStartY != selEndY) { // Check if there was any attempt to select
+				// Use clamped coordinates for checking if cell is selected
+				if y >= clampedSelStartY && y <= clampedSelEndY && x >= clampedSelStartX && x <= clampedSelEndX {
+					isSelected = true
+				}
+			}
+
+			currentFgColor := fgColorSDL
+			currentBgColor := bgColorSDL
+
+			if isSelected {
+				currentFgColor, currentBgColor = bgColorSDL, fgColorSDL // Swap
+				if currentBgColor.A < 255 {
+					selBgHex := r.theme.Colors.SelectionBackground
+					if selBgHex != "" {
+						parsedSelBg, parseErr := parseHexColor(selBgHex)
+						if parseErr == nil {
+							currentBgColor = parsedSelBg
+						} else {
+							log.Printf("Warning: Invalid theme selection background color '%s': %v. Using fallback.", selBgHex, parseErr)
+							currentBgColor = sdl.Color{R: 75, G: 75, B: 75, A: 255}
+						}
+					} else {
+						currentBgColor = sdl.Color{R: 75, G: 75, B: 75, A: 255}
+					}
+				}
+				selFgHex := r.theme.Colors.SelectionForeground
+				if selFgHex != "" {
+					parsedSelFg, parseErr := parseHexColor(selFgHex)
+					if parseErr == nil {
+						currentFgColor = parsedSelFg
+					} else {
+						log.Printf("Warning: Invalid theme selection foreground color '%s': %v. Using fallback.", selFgHex, parseErr)
+						if currentFgColor.A < 255 {
+							currentFgColor = sdl.Color{R: 220, G: 220, B: 220, A: 255}
+						}
+					}
+				} else if currentFgColor.A < 255 {
+					currentFgColor = sdl.Color{R: 220, G: 220, B: 220, A: 255}
+				}
+			}
+			// --- End Selection Highlighting ---
+
 			bgRect := sdl.Rect{
 				X: int32(x * r.glyphWidth),
-				Y: int32(y*r.glyphHeight) + int32(r.topPaddingPx), // APPLY PADDING
+				Y: int32(y*r.glyphHeight) + int32(r.topPaddingPx),
 				W: int32(r.glyphWidth),
 				H: int32(r.glyphHeight),
 			}
-			// if y == 0 && x == 0 {
-			// 	log.Printf("[Renderer.Draw] First cell bgRect.Y: %d (y=%d, glyphH=%d, pad=%d)",
-			// 		bgRect.Y, y, r.glyphHeight, r.topPaddingPx)
-			// }
-			r.renderer.SetDrawColor(bgColorSDL.R, bgColorSDL.G, bgColorSDL.B, bgColorSDL.A)
-			r.renderer.FillRect(&bgRect)
 
-			// --- Draw Character (if not blank) using Cache --- APPLY PADDING
-			if cell.Char != ' ' {
-				// Select font based on bold attribute
+			originalCellBgCode := cell.Bg
+			originalCellBgType := cell.BgColorType
+			if cell.Reverse {
+				originalCellBgCode = cell.Fg
+				originalCellBgType = cell.FgColorType
+			}
+			isOriginalBgDefault := (originalCellBgCode == buffer.BgDefault && originalCellBgType == buffer.ColorTypeStandard)
+
+			if isSelected || !isOriginalBgDefault {
+				r.renderer.SetDrawColor(currentBgColor.R, currentBgColor.G, currentBgColor.B, currentBgColor.A)
+				r.renderer.FillRect(&bgRect)
+			}
+
+			if cell.Char != ' ' || isSelected || !isOriginalBgDefault {
 				activeFont := r.font
 				if cell.Bold && r.boldFont != nil {
 					activeFont = r.boldFont
 				}
 
-				// Update cache key to include bold status
-				key := glyphCacheKey{char: cell.Char, fg: fgCode, fgColorType: fgType, bold: cell.Bold}
+				// Determine cache key properties based on whether cell is selected
+				cacheKeyFgCode := fgCode
+				cacheKeyFgType := fgType
+				if isSelected { // If selected, the visual foreground color comes from the original background attributes
+					cacheKeyFgCode = bgCode
+					cacheKeyFgType = bgType
+				}
+
+				key := glyphCacheKey{char: cell.Char, fg: cacheKeyFgCode, fgColorType: cacheKeyFgType, bold: cell.Bold, isSelected: isSelected}
 				texture, found := r.glyphCache[key]
 
 				if !found {
-					// Not cached: Render, create texture, add to cache
 					fnt := activeFont
 					charStr := string(cell.Char)
-					log.Printf("Rendering uncached char: '%s' (Rune: %U, Int: %d) Fg: %d (%s)", charStr, cell.Char, cell.Char, fgCode, fgType) // More detailed log
-					surface, err := fnt.RenderUTF8Blended(charStr, fgColorSDL)
-					if err != nil {
-						log.Printf("  -> Failed to render char '%c' (%d): %v", cell.Char, cell.Char, err)
+					surface, errSurf := fnt.RenderUTF8Blended(charStr, currentFgColor)
+					if errSurf != nil {
+						log.Printf("  -> Failed to render char '%c' (%d): %v", cell.Char, cell.Char, errSurf)
 						continue
 					}
-					texture, err = r.renderer.CreateTextureFromSurface(surface)
-					if err != nil {
+					var errTex error
+					texture, errTex = r.renderer.CreateTextureFromSurface(surface)
+					if errTex != nil {
 						surface.Free()
-						log.Printf("Failed to create texture for char '%c': %v", cell.Char, err)
+						log.Printf("Failed to create texture for char '%c': %v", cell.Char, errTex)
 						continue
 					}
 					surface.Free()
 					r.glyphCache[key] = texture
 				}
 
-				// Get texture dimensions (needed whether cached or newly created)
-				// We don't strictly need W/H here anymore if using fixed grid size for drawing
-				_, _, _, _, err := texture.Query() // Assign W and H to blank identifier
-				if err != nil {
-					log.Printf("Failed to query texture for char '%c': %v", cell.Char, err)
-					continue // Should not happen often
+				_, _, texW, texH, errQuery := texture.Query()
+				if errQuery != nil {
+					log.Printf("Failed to query texture for char '%c': %v", cell.Char, errQuery)
+					continue
 				}
 
-				// Copy texture to renderer - APPLY PADDING
 				dstRect := sdl.Rect{
-					X: int32(x * r.glyphWidth),
-					Y: int32(y*r.glyphHeight) + int32(r.topPaddingPx), // APPLY PADDING
-					W: int32(r.glyphWidth),
-					H: int32(r.glyphHeight),
+					X: int32(x*r.glyphWidth) + (int32(r.glyphWidth)-texW)/2,
+					Y: int32(y*r.glyphHeight) + int32(r.topPaddingPx) + (int32(r.glyphHeight)-texH)/2,
+					W: texW,
+					H: texH,
 				}
 				r.renderer.Copy(texture, nil, &dstRect)
 
-				// --- Draw Underline --- APPLY PADDING
 				if cell.Underline {
-					// lineY := int32((y+1)*r.glyphHeight - 1) // Old calculation
-					lineY := dstRect.Y + int32(r.glyphHeight) - 1 // Bottom of the padded cell
-					r.renderer.SetDrawColor(fgColorSDL.R, fgColorSDL.G, fgColorSDL.B, fgColorSDL.A)
-					r.renderer.DrawLine(dstRect.X, lineY, dstRect.X+dstRect.W, lineY)
+					lineY := dstRect.Y + texH - 1 // Underline at bottom of glyph
+					if activeFont == r.boldFont { // slight adjustment for bold
+						lineY = dstRect.Y + texH
+					}
+					// Use the final currentFgColor for underline
+					r.renderer.SetDrawColor(currentFgColor.R, currentFgColor.G, currentFgColor.B, currentFgColor.A)
+					r.renderer.DrawLine(dstRect.X, lineY, dstRect.X+texW, lineY)
 				}
-
-				// TODO: Handle Bold (maybe render again slightly offset, or use bold font variant if loaded)
 			}
 		}
 	}
+	// --- End of CORRECT rendering loop ---
 
-	// --- Draw Cursor --- APPLY PADDING
+	// --- Draw Cursor ---
 	if buf.IsLiveView() {
 		cursorX, cursorY := buf.GetCursorPos()
 		if cursorY >= 0 && cursorY < rows && cursorX >= 0 && cursorX < cols {
@@ -783,7 +831,7 @@ func imageToSurface(img image.Image) (*sdl.Surface, error) {
 	width, height := bounds.Dx(), bounds.Dy()
 
 	// Create an SDL surface (try ARGB8888 which is common)
-	surface, err := sdl.CreateRGBSurfaceWithFormat(0, int32(width), int32(height), 32, sdl.PIXELFORMAT_ARGB8888)
+	surface, err := sdl.CreateRGBSurfaceWithFormat(0, int32(width), int32(height), 32, uint32(sdl.PIXELFORMAT_ARGB8888))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create surface: %w", err)
 	}
@@ -800,12 +848,8 @@ func imageToSurface(img image.Image) (*sdl.Surface, error) {
 			a8 := uint8(a >> 8)
 
 			// Calculate index in the byte slice (assuming ARGB8888)
-			// SDL pixel order might vary by endianness! This assumes little-endian like x86.
-			// ARGB = [B G R A] in memory on little-endian? Check SDL docs!
-			// Let's assume standard RGBA packing for simplicity first, might need adjustment.
-			offset := (y*int(surface.Pitch) + x*4) // Correct: y is int, surface.Pitch is int
-			if offset+3 < len(pixels) {
-				// Assuming ARGB8888 on little-endian = BGRA byte order? Let's try typical RGBA order. Need confirmation.
+			offset := (int32(y)*surface.Pitch + int32(x)*4) // Corrected type mismatch
+			if offset+3 < int32(len(pixels)) {              // ensure offset is int32 for comparison
 				pixels[offset+0] = r8 // R
 				pixels[offset+1] = g8 // G
 				pixels[offset+2] = b8 // B

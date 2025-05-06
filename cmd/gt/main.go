@@ -248,6 +248,11 @@ func runApp() error {
 	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
 
+	// Selection state
+	var selectionActive bool
+	var selectionStartX, selectionStartY int // Cell coordinates
+	var selectionEndX, selectionEndY int     // Cell coordinates
+
 	for running {
 		select {
 		case <-ticker.C:
@@ -405,6 +410,72 @@ func runApp() error {
 					if scrolled {
 						needsRedraw = true
 					}
+				case *sdl.MouseButtonEvent:
+					if ev.Button == sdl.BUTTON_LEFT {
+						if ev.State == sdl.PRESSED {
+							selectionActive = true
+							// Convert pixel coordinates to cell coordinates
+							// Adjust for topPadding when calculating row
+							clickX := int(ev.X)
+							clickY := int(ev.Y) - topPadding
+							if glyphWidth > 0 && glyphHeight > 0 {
+								selectionStartX = clickX / glyphWidth
+								selectionStartY = clickY / glyphHeight // cell Y, 0-indexed from top of content area
+								selectionEndX = selectionStartX
+								selectionEndY = selectionStartY
+								needsRedraw = true
+
+								// --- DEBUG LOGGING ---
+								// Screen Y where the top of the selected cell *should* be drawn by the renderer
+								expectedRenderY := (selectionStartY * glyphHeight) + topPadding
+								log.Printf("[Selection] Start: Cell(%d, %d) from PixelWin(%d, %d). ClickInContentYPx: %d. ExpectedCellScreenTopY: %d",
+									selectionStartX, selectionStartY,
+									int(ev.X), int(ev.Y),
+									clickY, // This is (ev.Y - topPadding)
+									expectedRenderY)
+								// --- END DEBUG LOGGING ---
+							}
+						} else if ev.State == sdl.RELEASED {
+							if selectionActive {
+								selectionActive = false
+								releaseX := int(ev.X)
+								releaseY := int(ev.Y) - topPadding
+								if glyphWidth > 0 && glyphHeight > 0 {
+									selectionEndX = releaseX / glyphWidth
+									selectionEndY = releaseY / glyphHeight
+									needsRedraw = true
+									// --- DEBUG LOGGING ---
+									expectedRenderY := (selectionEndY * glyphHeight) + topPadding
+									log.Printf("[Selection] End: Cell(%d, %d) from PixelWin(%d, %d). ClickInContentYPx: %d. ExpectedCellScreenTopY: %d",
+										selectionEndX, selectionEndY,
+										int(ev.X), int(ev.Y),
+										releaseY, // This is (ev.Y - topPadding)
+										expectedRenderY)
+									// --- END DEBUG LOGGING ---
+									// TODO: Add logic to copy selected text here if needed
+								}
+							}
+						}
+					}
+				case *sdl.MouseMotionEvent:
+					if selectionActive {
+						// Update selectionEnd during drag
+						motionX := int(ev.X)
+						motionY := int(ev.Y) - topPadding
+						if glyphWidth > 0 && glyphHeight > 0 {
+							selectionEndX = motionX / glyphWidth
+							selectionEndY = motionY / glyphHeight
+							needsRedraw = true
+							// --- DEBUG LOGGING (Optional, can be verbose) ---
+							// expectedRenderY := (selectionEndY * glyphHeight) + topPadding
+							// log.Printf("[Selection] Drag: Cell(%d, %d) from PixelWin(%d, %d). ClickInContentYPx: %d. ExpectedCellScreenTopY: %d",
+							// 	selectionEndX, selectionEndY,
+							// 	int(ev.X), int(ev.Y),
+							// 	motionY, // This is (ev.Y - topPadding)
+							// 	expectedRenderY)
+							// --- END DEBUG LOGGING ---
+						}
+					}
 				}
 			}
 		}
@@ -422,7 +493,7 @@ func runApp() error {
 			// rendererSDL.Clear()
 
 			// Call the SDL renderer - it handles background drawing internally
-			if err := termRenderer.Draw(outBuffer); err != nil {
+			if err := termRenderer.Draw(outBuffer, selectionActive, selectionStartX, selectionStartY, selectionEndX, selectionEndY); err != nil {
 				log.Printf("Error drawing buffer: %v", err)
 				// Decide if error is fatal
 			}
