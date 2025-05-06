@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"log"
@@ -67,20 +68,23 @@ func loadConfig() Config {
 // --- Bubble Tea Model ---
 
 type model struct {
-	config          Config
-	styles          Styles // Pre-rendered styles
-	keymap          KeyMap // Keybindings
-	cwd             string
-	entries         []fs.DirEntry // All entries in the current directory
-	filteredEntries []fs.DirEntry // Entries matching the filter
-	cursor          int           // Index of the selected item in the *currently displayed* list (entries or filteredEntries)
-	err             error         // To display errors to the user
-	viewport        viewport.Model
-	ready           bool            // Indicates if viewport is ready
-	finalPath       string          // Stores the final selected path before exiting
-	showConfirm     bool            // Confirmation screen for file selection
-	filterInput     textinput.Model // Input field for filtering
-	filtering       bool            // Are we currently filtering?
+	config                   Config
+	styles                   Styles // Pre-rendered styles
+	keymap                   KeyMap // Keybindings
+	cwd                      string
+	entries                  []fs.DirEntry // All entries in the current directory
+	filteredEntries          []fs.DirEntry // Entries matching the filter
+	cursor                   int           // Index of the selected item in the *currently displayed* list (entries or filteredEntries)
+	err                      error         // To display errors to the user
+	viewport                 viewport.Model
+	ready                    bool            // Indicates if viewport is ready
+	finalPath                string          // Stores the final selected path before exiting (for non-image files)
+	showConfirm              bool            // Confirmation screen for file selection
+	filterInput              textinput.Model // Input field for filtering
+	filtering                bool            // Are we currently filtering?
+	isInImagePreviewMode     bool
+	imageFilesInDir          []fs.DirEntry // Cache of image files in the current directory view
+	currentPreviewImageIndex int           // Index into imageFilesInDir
 }
 
 // Styles struct to hold pre-rendered lipgloss styles
@@ -143,7 +147,7 @@ var DefaultKeyMap = KeyMap{
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "select"),
 	),
-	SelectSpace: key.NewBinding( // Alias for select
+	SelectSpace: key.NewBinding(
 		key.WithKeys(" "),
 		key.WithHelp("space", "select"),
 	),
@@ -367,6 +371,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds []tea.Cmd
 	)
 
+	if m.isInImagePreviewMode {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			keyStr := msg.String()
+			switch {
+			case keyStr == "k" || keyStr == "up":
+				if len(m.imageFilesInDir) > 0 {
+					m.currentPreviewImageIndex--
+					if m.currentPreviewImageIndex < 0 {
+						m.currentPreviewImageIndex = len(m.imageFilesInDir) - 1
+					}
+					if err := m.displayCurrentImageInGT(); err != nil {
+						m.err = err
+					}
+				}
+				return m, nil
+			case keyStr == "j" || keyStr == "down":
+				if len(m.imageFilesInDir) > 0 {
+					m.currentPreviewImageIndex++
+					if m.currentPreviewImageIndex >= len(m.imageFilesInDir) {
+						m.currentPreviewImageIndex = 0
+					}
+					if err := m.displayCurrentImageInGT(); err != nil {
+						m.err = err
+					}
+				}
+				return m, nil
+			case key.Matches(msg, m.keymap.Quit) || key.Matches(msg, m.keymap.ClearFilter) || key.Matches(msg, m.keymap.Back) || keyStr == "q" || keyStr == "escape":
+				m.isInImagePreviewMode = false
+				fmt.Print("\x1b[2J\x1b[H")
+				_ = os.Stdout.Sync()
+				m.err = nil
+
+				// If there was filter text, ensure the filter input is active again.
+				if m.filterInput.Value() != "" {
+					m.filtering = true // Make the filter input visible
+					m.filterInput.Focus()
+					cmds = append(cmds, textinput.Blink) // Add blink command
+				} else {
+					m.filtering = false // No filter text, ensure filter mode is off
+				}
+				// m.applyFilter() // Re-applying filter here might be redundant if content isn't changing, but renderEntries will use current filter.
+				m.viewport.SetContent(m.renderEntries())
+				return m, tea.Batch(cmds...)
+			}
+		}
+		return m, nil
+	}
+
 	currentEntries := m.entries
 	if m.filtering || m.filterInput.Value() != "" {
 		currentEntries = m.filteredEntries
@@ -422,42 +475,56 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showConfirm {
 			switch {
 			case key.Matches(msg, m.keymap.ConfirmYes):
-				m.finalPath, m.err = filepath.Abs(m.finalPath)
-				if m.err != nil {
+				absPath, err := filepath.Abs(m.finalPath)
+				if err != nil {
+					m.err = fmt.Errorf("Error getting absolute path: %w", err)
 					m.showConfirm = false
+					m.finalPath = ""
 				} else {
-					return m, tea.Quit
+					// This is for non-image files only now
+					fmt.Println(absPath)
+					_ = os.Stdout.Sync()
+					return m, tea.Quit // Quit after printing path
 				}
-			case key.Matches(msg, m.keymap.ConfirmNo), key.Matches(msg, m.keymap.ClearFilter): // Esc cancels confirm
+			case key.Matches(msg, m.keymap.ConfirmNo), key.Matches(msg, m.keymap.ClearFilter):
 				m.showConfirm = false
 				m.finalPath = ""
 			}
-			m.viewport.SetContent(m.renderEntries()) // Re-render after confirm action
+			m.viewport.SetContent(m.renderEntries())
 			return m, nil
 		}
 
 		// Handle filter input keys if filtering
 		if m.filtering {
 			switch {
-			// Clear filter and exit filtering mode
+			// Clear filter and exit filtering mode (ESC key)
 			case key.Matches(msg, m.keymap.ClearFilter):
 				m.filtering = false
 				m.filterInput.Blur()
-				m.filterInput.Reset()
-				m.applyFilter()                      // Re-apply to show all entries
-				cmds = append(cmds, textinput.Blink) // Stop blinking
+				m.filterInput.Reset() // Clears text
+				m.applyFilter()       // Shows all entries
+				// cmds = append(cmds, textinput.Blink) // Blink is usually tied to focus; blurring should handle it.
+				// Or, if we want to ensure a blink command isn't processed, ensure cmds is managed correctly.
+				// For now, let's rely on Blur(). If a specific "stop blink" cmd is needed, it's usually implicit.
 
-			// Default: Update filter input
+			// Commit filter and return to list navigation (ENTER key)
+			case msg.Type == tea.KeyEnter:
+				m.filtering = false  // Stop active typing in filter
+				m.filterInput.Blur() // Remove cursor from input; this should also stop blinking.
+				// DO NOT RESET m.filterInput.Value() - this keeps the filter active
+				m.applyFilter() // Ensure filteredEntries is up-to-date with current filter text
+				// No specific cmd needed to stop blink, Blur() should handle it.
+
+			// Default: Update filter input (for other character keys)
 			default:
 				var filterCmd tea.Cmd
 				m.filterInput, filterCmd = m.filterInput.Update(msg)
-				m.applyFilter() // Re-apply filter on every keystroke
-				cmds = append(cmds, filterCmd)
-
+				m.applyFilter()                // Re-apply filter on every keystroke
+				cmds = append(cmds, filterCmd) // This will include textinput.Blink if input is focused and active
 			}
 			// Ensure viewport updates after filter actions
 			m.viewport.SetContent(m.renderEntries())
-			return m, tea.Batch(cmds...) // Return early after handling filter keys
+			return m, tea.Batch(cmds...)
 		}
 
 		// Handle regular navigation and actions (when not filtering)
@@ -504,14 +571,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break // Nothing to select
 			}
 			selectedEntry := currentEntries[m.cursor]
-			newPath := filepath.Join(m.cwd, selectedEntry.Name())
+			absPath := filepath.Join(m.cwd, selectedEntry.Name()) // Calculate absPath here
 
 			if selectedEntry.IsDir() {
-				m.readDir(newPath) // Navigate into directory (will reset filter)
+				m.readDir(absPath) // Navigate into directory (will reset filter)
 			} else {
-				// File selected - prepare for confirmation
-				m.finalPath = newPath
-				m.showConfirm = true
+				m.finalPath = absPath
+				if isImageFile(absPath) {
+					m.isInImagePreviewMode = true
+					m.showConfirm = false
+					m.imageFilesInDir = []fs.DirEntry{}
+
+					sourceEntries := m.entries
+					if m.filtering || m.filterInput.Value() != "" {
+						sourceEntries = m.filteredEntries
+					}
+
+					selectedIndexInImages := -1
+					for _, entry := range sourceEntries {
+						if entry.IsDir() {
+							continue
+						}
+						entryAbsPath := filepath.Join(m.cwd, entry.Name())
+						if isImageFile(entryAbsPath) {
+							m.imageFilesInDir = append(m.imageFilesInDir, entry)
+							if entryAbsPath == absPath {
+								selectedIndexInImages = len(m.imageFilesInDir) - 1
+							}
+						}
+					}
+
+					if len(m.imageFilesInDir) > 0 {
+						if selectedIndexInImages != -1 {
+							m.currentPreviewImageIndex = selectedIndexInImages
+						} else {
+							m.currentPreviewImageIndex = 0
+						}
+						errDisplay := m.displayCurrentImageInGT()
+						if errDisplay != nil {
+							m.err = errDisplay
+							m.isInImagePreviewMode = false
+						}
+					} else {
+						m.err = fmt.Errorf("No images found in current view.")
+						m.isInImagePreviewMode = false
+					}
+					return m, nil
+				} else {
+					m.showConfirm = true
+				}
 			}
 
 		// Go back
@@ -535,7 +643,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
-	return m, tea.Batch(cmds...)
+	return m, tea.Batch(cmds...) // This should be the correct end of the Update function
 }
 
 func (m model) headerView() string {
@@ -561,6 +669,9 @@ func (m model) footerView() string {
 	// Basic navigation help
 	help.WriteString(m.keymap.Up.Help().Key + "/" + m.keymap.Down.Help().Key + " nav ")
 	help.WriteString(m.keymap.SelectEnter.Help().Key + " sel ")
+	if m.keymap.SelectSpace.Enabled() { // Check if space is enabled as a key
+		help.WriteString(m.keymap.SelectSpace.Help().Key + " sel ")
+	}
 	help.WriteString(m.keymap.Back.Help().Key + " back ")
 
 	if m.filtering {
@@ -590,51 +701,41 @@ func (m model) footerView() string {
 	return m.styles.Footer.Render(footerText) // Just the text if border is present
 }
 
-func (m model) View() string {
-	if !m.ready {
-		return "\n  Initializing..."
+// displayCurrentImageInGT is a helper to load and send image sequence to gt
+func (m *model) displayCurrentImageInGT() error {
+	if len(m.imageFilesInDir) == 0 {
+		return fmt.Errorf("No images available in current directory listing")
+	}
+	if m.currentPreviewImageIndex < 0 || m.currentPreviewImageIndex >= len(m.imageFilesInDir) {
+		// This case should ideally be handled by wrapping logic before calling,
+		// but as a safeguard:
+		m.currentPreviewImageIndex = 0   // Reset to first image if out of bounds
+		if len(m.imageFilesInDir) == 0 { // Double check after reset
+			return fmt.Errorf("No images to display after index reset")
+		}
 	}
 
-	filterStr := m.filterView()
-	viewContent := m.viewport.View()
-
-	// Add padding below filter if it's shown and border is hidden
-	if filterStr != "" && m.styles.Base.GetBorderStyle() == lipgloss.HiddenBorder() {
-		filterStr += "\n" // Add spacing below filter input
+	imgPath := filepath.Join(m.cwd, m.imageFilesInDir[m.currentPreviewImageIndex].Name())
+	data, err := os.ReadFile(imgPath) // Use os.ReadFile
+	if err != nil {
+		return fmt.Errorf("Error reading image %s: %w", filepath.Base(imgPath), err)
 	}
+	b64data := base64.StdEncoding.EncodeToString(data)
 
-	// Combine header, filter (if active), viewport, and footer
-	formatString := "%s\n%s%s\n%s"
-	return fmt.Sprintf(formatString,
-		m.headerView(),
-		filterStr, // Filter view (includes newline if needed)
-		viewContent,
-		m.footerView())
+	fmt.Print("\x1b[2J\x1b[H") // Clear screen + home
+	fmt.Printf("\x1b]1337;File=inline=1:%s\a", b64data)
+	_ = os.Stdout.Sync()
+	return nil
 }
 
-// --- Main Function ---
-
-func main() {
-	// Enable mouse events
-	// if _, ok := os.LookupEnv("DISABLE_MOUSE"); !ok {
-	// 	fmt.Println("Enabling mouse...") // Debug
-	// 	tea.EnterAltScreen() // Not strictly necessary for mouse but often used together
-	// }
-
-	m := newModel()
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()) // Enable Alt Screen and Mouse
-
-	if err := p.Start(); err != nil {
-		fmt.Printf("Alas, there's been an error: %v", err)
-		os.Exit(1)
-	}
-
-	// After TUI exits, print the final path if one was selected
-	if m.finalPath != "" {
-		fmt.Println(m.finalPath) // Print final absolute path to stdout
-	} else if m.err != nil && !m.showConfirm { // Print error if we exited due to one (and not confirming)
-		fmt.Fprintf(os.Stderr, "Error: %v\n", m.err)
-		os.Exit(1) // Exit with error code if there was an error state
+// isImageFile checks if the filename has a common image extension.
+func isImageFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp": // Added .bmp as another common one
+		return true
+	default:
+		return false
 	}
 }
 
@@ -651,4 +752,76 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// View is a part of tea.Model - THIS IS THE CORRECT ONE
+func (m model) View() string {
+	if !m.ready {
+		return "\n  Initializing..."
+	}
+
+	if m.isInImagePreviewMode {
+		var status string
+		if m.err != nil { // Prioritize error display
+			status = m.styles.Error.Render(m.err.Error())
+		} else if len(m.imageFilesInDir) > 0 &&
+			m.currentPreviewImageIndex >= 0 &&
+			m.currentPreviewImageIndex < len(m.imageFilesInDir) {
+			currentImageName := filepath.Base(m.imageFilesInDir[m.currentPreviewImageIndex].Name())
+			status = fmt.Sprintf("Preview: %s (%d/%d) | Cycle: j/k,↑/↓ | Exit: Esc/q/Bksp | Scroll in GT: (mouse wheel/keys if needed)",
+				currentImageName,
+				m.currentPreviewImageIndex+1,
+				len(m.imageFilesInDir))
+		} else {
+			status = "Image preview active. No image loaded or index error."
+		}
+		return "\n\n" + m.styles.Footer.Render(status)
+	}
+
+	// Normal view rendering
+	filterStr := m.filterView()
+	viewContent := m.viewport.View()
+
+	// Add padding below filter if it's shown and border is hidden
+	if filterStr != "" && m.styles.Base.GetBorderStyle() == lipgloss.HiddenBorder() {
+		filterStr += "\n"
+	}
+
+	formatString := "%s\n%s%s\n%s"
+	return fmt.Sprintf(formatString,
+		m.headerView(),
+		filterStr,
+		viewContent,
+		m.footerView())
+}
+
+// --- Main Function ---
+
+func main() {
+	// Enable mouse events
+	// if _, ok := os.LookupEnv("DISABLE_MOUSE"); !ok {
+	// 	fmt.Println("Enabling mouse...") // Debug
+	// 	tea.EnterAltScreen() // Not strictly necessary for mouse but often used together
+	// }
+
+	m := newModel() // m is of type model
+
+	// If Init, Update, View are defined on (m model), then pass m directly.
+	// If they are on (m *model), then pass &m.
+	// The linter errors suggest they are on (m model) due to "missing method View" on *model.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+
+	if err := p.Start(); err != nil { // Start() will block until tea.Quit is received
+		fmt.Printf("Alas, there's been an error: %v", err)
+		os.Exit(1)
+	}
+
+	// Outputting is now handled directly in the Update function before tea.Quit.
+	/*
+		// After TUI exits, print the final path if one was selected
+		// This logic was commented out in previous steps as Update handles printing.
+		// If finalModel was intended to be used, it should be the result of p.Run()
+		// or another mechanism to get the final model state.
+		// For now, keeping it commented as per earlier decisions.
+	*/
 }
