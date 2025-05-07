@@ -17,3 +17,9 @@ footer_color = "#777777" # Dim Gray
 # Border Styles (optional)
 border_color = "#FF00FF" # Fuchsia / Magenta
 border_type = "rounded"  # Options: single, double, rounded, thick, hidden
+
+[behavior]
+show_hidden_by_default = false
+confirm_file_operations = true
+preview_max_size_kb = 100
+remember_last_directory = true
