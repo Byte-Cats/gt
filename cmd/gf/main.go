@@ -144,8 +144,8 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("end/G", "go to bottom"),
 	),
 	SelectEnter: key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "select"),
+		key.WithKeys("enter", "l"),
+		key.WithHelp("enter/l", "select"),
 	),
 	SelectSpace: key.NewBinding(
 		key.WithKeys(" "),
