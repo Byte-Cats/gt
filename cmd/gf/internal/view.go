@@ -11,7 +11,7 @@ import (
 // HeaderView renders the header section
 func (m *Model) HeaderView() string {
 	title := m.Styles.Header.Render("Current: " + m.Cwd)
-	
+
 	// Don't repeat the line if border is enabled, as viewport will have top border
 	if m.Styles.Base.GetBorderStyle() == lipgloss.HiddenBorder() {
 		line := strings.Repeat("─", m.Viewport.Width)
@@ -47,7 +47,7 @@ func (m *Model) FooterView() string {
 		// Basic navigation help
 		help.WriteString(m.Keymap.Up.Help().Key + "/" + m.Keymap.Down.Help().Key + " nav • ")
 		help.WriteString(m.Keymap.SelectEnter.Help().Key + " sel • ")
-		
+
 		if m.Filtering {
 			help.WriteString(m.Keymap.ClearFilter.Help().Key + " clear • ")
 		} else {
@@ -55,7 +55,7 @@ func (m *Model) FooterView() string {
 			help.WriteString(m.Keymap.ToggleHidden.Help().Key + " hidden • ")
 			help.WriteString(m.Keymap.AddBookmark.Help().Key + "/" + m.Keymap.ShowBookmarks.Help().Key + " bkmrk • ")
 		}
-		
+
 		help.WriteString(m.Keymap.Help.Help().Key + " help • ")
 		help.WriteString(m.Keymap.Quit.Help().Key + " quit")
 	}
@@ -85,9 +85,9 @@ func (m *Model) FooterView() string {
 // HelpView renders the help screen
 func (m *Model) HelpView() string {
 	var b strings.Builder
-	
+
 	b.WriteString("# Keyboard Shortcuts\n\n")
-	
+
 	// Navigation
 	b.WriteString("## Navigation\n")
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Up.Help().Key, "Move cursor up"))
@@ -98,17 +98,17 @@ func (m *Model) HelpView() string {
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.GoToBottom.Help().Key, "Go to bottom"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.SelectEnter.Help().Key, "Select item"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Back.Help().Key, "Go to parent directory"))
-	
+
 	// Filtering
 	b.WriteString("\n## Filtering\n")
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.StartFilter.Help().Key, "Start filtering"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ClearFilter.Help().Key, "Clear filter"))
-	
+
 	// Bookmarks
 	b.WriteString("\n## Bookmarks\n")
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.AddBookmark.Help().Key, "Add bookmark"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ShowBookmarks.Help().Key, "Show bookmarks"))
-	
+
 	// File Operations
 	b.WriteString("\n## File Operations\n")
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Copy.Help().Key, "Copy file/directory"))
@@ -116,31 +116,45 @@ func (m *Model) HelpView() string {
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Paste.Help().Key, "Paste file/directory"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Delete.Help().Key, "Delete file/directory"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Rename.Help().Key, "Rename file/directory"))
-	
+
 	// Display
 	b.WriteString("\n## Display\n")
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ToggleHidden.Help().Key, "Toggle hidden files"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.TogglePreview.Help().Key, "Toggle preview pane"))
-	
+
+	// Image Preview Mode
+	b.WriteString("\n## Image Preview Mode\n")
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevNext.Help().Key, "Next image"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevPrev.Help().Key, "Previous image"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevSizeUp.Help().Key, "Increase size"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevSizeDown.Help().Key, "Decrease size"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevAlignL.Help().Key, "Align left"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevAlignC.Help().Key, "Align center"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevAlignR.Help().Key, "Align right"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevAspect.Help().Key, "Toggle aspect ratio"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevPersist.Help().Key, "Toggle persistence"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgPrevReset.Help().Key, "Reset image options"))
+	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.ImgFitToWidth.Help().Key, "Fit to terminal width"))
+
 	// General
 	b.WriteString("\n## General\n")
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Help.Help().Key, "Show/hide help"))
 	b.WriteString(fmt.Sprintf("%-15s %s\n", m.Keymap.Quit.Help().Key, "Quit"))
-	
+
 	return b.String()
 }
 
 // StatusBar renders a compact status bar for the current application state
 func (m *Model) StatusBar() string {
 	var status []string
-	
+
 	// Current directory indicator
 	dirName := filepath.Base(m.Cwd)
 	if dirName == "." {
 		dirName = m.Cwd
 	}
 	status = append(status, fmt.Sprintf("Dir: %s", dirName))
-	
+
 	// Item count
 	totalItems := len(m.Entries)
 	visibleItems := totalItems
@@ -148,17 +162,17 @@ func (m *Model) StatusBar() string {
 		visibleItems = len(m.FilteredEntries)
 	}
 	status = append(status, fmt.Sprintf("Items: %d/%d", visibleItems, totalItems))
-	
+
 	// Filter indicator
 	if m.FilterInput.Value() != "" {
 		status = append(status, fmt.Sprintf("Filter: %s", m.FilterInput.Value()))
 	}
-	
+
 	// Hidden files indicator
 	if m.ShowHidden {
 		status = append(status, "Hidden: On")
 	}
-	
+
 	// Clipboard indicator
 	if m.Clipboard != "" {
 		clipboardOp := "Copy"
@@ -167,7 +181,7 @@ func (m *Model) StatusBar() string {
 		}
 		status = append(status, fmt.Sprintf("%s: %s", clipboardOp, filepath.Base(m.Clipboard)))
 	}
-	
+
 	return strings.Join(status, " | ")
 }
 
@@ -176,18 +190,34 @@ func (m *Model) ImagePreviewStatusBar() string {
 	if !m.IsInImagePreviewMode || len(m.ImageFilesInDir) == 0 {
 		return "Image preview: No images available"
 	}
-	
+
 	// Make sure index is valid
 	if m.CurrentPreviewImageIndex < 0 || m.CurrentPreviewImageIndex >= len(m.ImageFilesInDir) {
 		return "Image preview: Index out of range"
 	}
-	
+
 	currentImage := m.ImageFilesInDir[m.CurrentPreviewImageIndex]
+
+	// Show image options in status
+	persistentStatus := ""
+	if m.CurrentImageOptions.Persistent {
+		persistentStatus = "Persistent"
+	}
+	options := fmt.Sprintf("Size:[%s×%s] Align:%s AR:%v Z:%d %s",
+		m.CurrentImageOptions.Width,
+		m.CurrentImageOptions.Height,
+		m.CurrentImageOptions.Align,
+		m.CurrentImageOptions.PreserveAspectRatio,
+		m.CurrentImageOptions.ZIndex,
+		persistentStatus,
+	)
+
 	return fmt.Sprintf(
-		"Image: %s (%d/%d) | Use j/k to navigate, Esc to exit",
+		"Image: %s (%d/%d) | %s",
 		currentImage.Name(),
 		m.CurrentPreviewImageIndex+1,
 		len(m.ImageFilesInDir),
+		options,
 	)
 }
 
@@ -196,7 +226,7 @@ func (m *Model) PreviewPane() string {
 	if !m.ShowPreview {
 		return ""
 	}
-	
+
 	return m.PreviewViewport.View()
 }
 
@@ -208,27 +238,38 @@ func (m *Model) View() string {
 
 	// Image preview mode has a special view
 	if m.IsInImagePreviewMode {
-		return "\n\n" + m.Styles.Footer.Render(m.ImagePreviewStatusBar())
+		// First line of help
+		helpText1 := "Navigation: j/k: prev/next image | Esc/q: exit viewer"
+		// Second line with display options
+		helpText2 := "Display: +/-: resize | l/c/r: align left/center/right | a: toggle aspect ratio | p: toggle persistent"
+		// Third line with additional options
+		helpText3 := "Options: h/w: height/width mode | m: toggle max-height | z: increase z-index | 0: reset all options"
+
+		statusBar := m.ImagePreviewStatusBar()
+		return "\n\n" + m.Styles.Footer.Render(statusBar) + "\n" +
+			m.Styles.Header.Render(helpText1) + "\n" +
+			m.Styles.Header.Render(helpText2) + "\n" +
+			m.Styles.Header.Render(helpText3)
 	}
-	
+
 	// Help screen mode
 	if m.ShowHelp {
 		return m.HelpView()
 	}
-	
+
 	// Main layout
 	filterStr := m.FilterView()
 	viewContent := m.Viewport.View()
 	previewContent := m.PreviewPane()
-	
+
 	// Status bar (below header)
 	statusBar := m.StatusBar()
-	
+
 	// Add padding below filter if it's shown and border is hidden
 	if filterStr != "" && m.Styles.Base.GetBorderStyle() == lipgloss.HiddenBorder() {
 		filterStr += "\n"
 	}
-	
+
 	// Basic layout without preview
 	if !m.ShowPreview || previewContent == "" {
 		return fmt.Sprintf("%s\n%s\n%s\n%s\n%s",
@@ -238,7 +279,7 @@ func (m *Model) View() string {
 			viewContent,
 			m.FooterView())
 	}
-	
+
 	// Layout with preview pane (split screen)
 	// This is a simplified version - for a more advanced split layout
 	// you'd need to calculate widths and handle resizing better

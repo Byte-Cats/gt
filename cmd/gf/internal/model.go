@@ -37,10 +37,10 @@ type StyleConfig struct {
 
 // BehaviorConfig defines application behavior settings
 type BehaviorConfig struct {
-	ShowHiddenByDefault    bool `toml:"show_hidden_by_default"`
-	ConfirmFileOperations  bool `toml:"confirm_file_operations"`
-	PreviewMaxSizeKB       int  `toml:"preview_max_size_kb"`
-	RememberLastDirectory  bool `toml:"remember_last_directory"`
+	ShowHiddenByDefault   bool `toml:"show_hidden_by_default"`
+	ConfirmFileOperations bool `toml:"confirm_file_operations"`
+	PreviewMaxSizeKB      int  `toml:"preview_max_size_kb"`
+	RememberLastDirectory bool `toml:"remember_last_directory"`
 }
 
 // PersistentState represents data that is saved between sessions
@@ -52,35 +52,36 @@ type PersistentState struct {
 
 // Model represents the application state
 type Model struct {
-	Config                  Config
-	Styles                  Styles // Pre-rendered styles
-	Keymap                  KeyMap // Keybindings
-	Cwd                     string
-	Entries                 []fs.DirEntry // All entries in the current directory
-	FilteredEntries         []fs.DirEntry // Entries matching the filter
-	Cursor                  int           // Index of the selected item in the *currently displayed* list
-	Err                     error         // To display errors to the user
-	Viewport                viewport.Model
-	PreviewViewport         viewport.Model
-	Ready                   bool            // Indicates if viewport is ready
-	FinalPath               string          // Stores the final selected path before exiting (for non-image files)
-	ShowConfirm             bool            // Confirmation screen for file selection
-	FilterInput             textinput.Model // Input field for filtering
-	Filtering               bool            // Are we currently filtering?
-	IsInImagePreviewMode    bool
-	ImageFilesInDir         []fs.DirEntry // Cache of image files in the current directory view
-	CurrentPreviewImageIndex int           // Index into imageFilesInDir
-	ShowPreview             bool           // Whether to show the preview pane
-	PreviewContent          string         // Content to display in preview pane
-	ShowHidden              bool           // Whether to show hidden files
-	Bookmarks               []string       // List of bookmarked paths
-	ShowBookmarks           bool           // Whether we're in bookmarks view
-	Clipboard               string         // Path for copy/cut operations
-	ClipboardOp             string         // "copy" or "cut"
-	ConfirmOperation        bool           // Whether we're confirming a file operation
-	ConfirmPrompt           string         // Prompt text for confirmation
-	ConfirmAction           func() error   // Action to execute on confirmation
-	ShowHelp                bool           // Whether to show help screen
+	Config                   Config
+	Styles                   Styles // Pre-rendered styles
+	Keymap                   KeyMap // Keybindings
+	Cwd                      string
+	Entries                  []fs.DirEntry // All entries in the current directory
+	FilteredEntries          []fs.DirEntry // Entries matching the filter
+	Cursor                   int           // Index of the selected item in the *currently displayed* list
+	Err                      error         // To display errors to the user
+	Viewport                 viewport.Model
+	PreviewViewport          viewport.Model
+	Ready                    bool            // Indicates if viewport is ready
+	FinalPath                string          // Stores the final selected path before exiting (for non-image files)
+	ShowConfirm              bool            // Confirmation screen for file selection
+	FilterInput              textinput.Model // Input field for filtering
+	Filtering                bool            // Are we currently filtering?
+	IsInImagePreviewMode     bool
+	ImageFilesInDir          []fs.DirEntry       // Cache of image files in the current directory view
+	CurrentPreviewImageIndex int                 // Index into imageFilesInDir
+	ShowPreview              bool                // Whether to show the preview pane
+	PreviewContent           string              // Content to display in preview pane
+	ShowHidden               bool                // Whether to show hidden files
+	Bookmarks                []string            // List of bookmarked paths
+	ShowBookmarks            bool                // Whether we're in bookmarks view
+	Clipboard                string              // Path for copy/cut operations
+	ClipboardOp              string              // "copy" or "cut"
+	ConfirmOperation         bool                // Whether we're confirming a file operation
+	ConfirmPrompt            string              // Prompt text for confirmation
+	ConfirmAction            func() error        // Action to execute on confirmation
+	ShowHelp                 bool                // Whether to show help screen
+	CurrentImageOptions      ImageDisplayOptions // Current image display settings
 }
 
 // Styles struct to hold pre-rendered lipgloss styles
@@ -126,15 +127,16 @@ func NewModel() Model {
 	}
 
 	m := Model{
-		Config:      cfg,
-		Styles:      styles,
-		Keymap:      DefaultKeyMap,
-		Cwd:         cwd,
-		Err:         nil, // Initial state has no error
-		FilterInput: filterInput,
-		Filtering:   false, // Start not filtering
-		ShowHidden:  cfg.Behavior.ShowHiddenByDefault,
-		Bookmarks:   state.Bookmarks,
+		Config:              cfg,
+		Styles:              styles,
+		Keymap:              DefaultKeyMap,
+		Cwd:                 cwd,
+		Err:                 nil, // Initial state has no error
+		FilterInput:         filterInput,
+		Filtering:           false, // Start not filtering
+		ShowHidden:          cfg.Behavior.ShowHiddenByDefault,
+		Bookmarks:           state.Bookmarks,
+		CurrentImageOptions: DefaultImageOptions(), // Initialize here
 	}
 	m.ReadDir(cwd) // Load initial directory contents
 
@@ -228,9 +230,9 @@ func createStyles(cfg StyleConfig) Styles {
 
 // ReadDir reads the contents of the directory specified by path
 func (m *Model) ReadDir(path string) {
-	m.Err = nil           // Clear previous error
-	m.Filtering = false   // Reset filtering state when changing directory
-	m.FilterInput.Reset() // Clear filter text
+	m.Err = nil             // Clear previous error
+	m.Filtering = false     // Reset filtering state when changing directory
+	m.FilterInput.Reset()   // Clear filter text
 	m.ShowBookmarks = false // Exit bookmark view if active
 
 	// Validate path before attempting to read
@@ -273,7 +275,7 @@ func (m *Model) ReadDir(path string) {
 			files = append(files, entry)
 		}
 	}
-	
+
 	m.Entries = append(dirs, files...)
 	m.ApplyFilter() // Apply filter (which will be empty initially)
 	m.Viewport.SetContent(m.RenderEntries())
@@ -287,10 +289,10 @@ func (m *Model) ReadDir(path string) {
 		if len(state.RecentDirs) > 10 {
 			state.RecentDirs = state.RecentDirs[:10]
 		}
-		
+
 		// Update last directory
 		state.LastDirectory = path
-		
+
 		// Save state
 		_ = SaveState(&state)
 	}
@@ -299,7 +301,7 @@ func (m *Model) ReadDir(path string) {
 // ApplyFilter updates the FilteredEntries based on the FilterInput value
 func (m *Model) ApplyFilter() {
 	filterText := strings.ToLower(m.FilterInput.Value())
-	
+
 	// Pre-allocate capacity for filtered entries
 	if filterText == "" {
 		m.FilteredEntries = m.Entries // Just point to full list for empty filter
@@ -308,16 +310,16 @@ func (m *Model) ApplyFilter() {
 		m.Viewport.GotoTop()
 		return
 	}
-	
+
 	// If filter text isn't empty, create a new slice with estimated capacity
 	m.FilteredEntries = make([]fs.DirEntry, 0, len(m.Entries)/2) // Estimate half will match
-	
+
 	for _, entry := range m.Entries {
 		if strings.Contains(strings.ToLower(entry.Name()), filterText) {
 			m.FilteredEntries = append(m.FilteredEntries, entry)
 		}
 	}
-	
+
 	m.Cursor = 0
 	m.Viewport.SetContent(m.RenderEntries())
 	m.Viewport.GotoTop()
@@ -380,17 +382,17 @@ func (m *Model) RenderEntries() string {
 // RenderBookmarks generates the bookmarks view content
 func (m *Model) RenderBookmarks() string {
 	var builder strings.Builder
-	
+
 	builder.WriteString("BOOKMARKS:\n\n")
-	
+
 	if len(m.Bookmarks) == 0 {
 		builder.WriteString("  (No bookmarks saved)")
 		return builder.String()
 	}
-	
+
 	for i, bookmark := range m.Bookmarks {
 		var line string
-		
+
 		// Apply selection style if this item is the cursor
 		if i == m.Cursor {
 			line = m.Styles.SelectedDir.Render(m.Styles.SelectedPrefix + bookmark)
@@ -398,12 +400,50 @@ func (m *Model) RenderBookmarks() string {
 			// Render without prefix
 			line = "  " + m.Styles.Dir.Render(bookmark)
 		}
-		
+
 		builder.WriteString(line)
 		builder.WriteRune('\n')
 	}
-	
+
 	return builder.String()
+}
+
+// ImageDisplayOptions stores parameters for image rendering
+type ImageDisplayOptions struct {
+	Width               string // Can be in cells, pixels (px), or percentage (%)
+	Height              string // Can be in cells, pixels (px), or percentage (%)
+	MaxWidth            string // Maximum width in pixels
+	MaxHeight           string // Maximum height in pixels
+	PreserveAspectRatio bool   // Whether to maintain aspect ratio
+	Align               string // horizontal alignment: "left", "center", "right"
+	ZIndex              int    // For layering images (higher = in front)
+	Persistent          bool   // Whether to keep image when cursor moves
+	Name                string // Reference name for the image
+	AdjustMode          string // Which dimension to adjust: "width", "height", or "both"
+	BackgroundColor     string // Optional background color (hex: "#RRGGBB")
+	Rotation            int    // Rotation in degrees (0, 90, 180, 270)
+	Quality             int    // JPEG quality (1-100, only applies to JPEG images)
+	AnimationDuration   int    // Duration between frames for animated GIFs (ms)
+}
+
+// DefaultImageOptions returns standard display options
+func DefaultImageOptions() ImageDisplayOptions {
+	return ImageDisplayOptions{
+		Width:               "90%",
+		Height:              "auto",
+		MaxWidth:            "0", // Unlimited
+		MaxHeight:           "0", // Unlimited
+		PreserveAspectRatio: true,
+		Align:               "center",
+		ZIndex:              0,
+		Persistent:          false,
+		Name:                "preview",
+		AdjustMode:          "width",
+		BackgroundColor:     "",
+		Rotation:            0,
+		Quality:             85,
+		AnimationDuration:   100,
+	}
 }
 
 // DisplayCurrentImageInGT is a helper to load and send image sequence to gt
@@ -421,13 +461,13 @@ func (m *Model) DisplayCurrentImageInGT() error {
 	}
 
 	imgPath := filepath.Join(m.Cwd, m.ImageFilesInDir[m.CurrentPreviewImageIndex].Name())
-	
+
 	// Get file info first to check size
 	fileInfo, err := os.Stat(imgPath)
 	if err != nil {
 		return fmt.Errorf("Error checking image file %s: %w", filepath.Base(imgPath), err)
 	}
-	
+
 	// For very large images, consider warning or alternative handling
 	const maxSizeForDirectDisplay = 10 * 1024 * 1024 // 10MB
 	if fileInfo.Size() > maxSizeForDirectDisplay {
@@ -435,15 +475,74 @@ func (m *Model) DisplayCurrentImageInGT() error {
 		fmt.Printf("\x1b[2J\x1b[H") // Clear screen + home
 		fmt.Printf("Warning: Large image file (%d MB). Loading...\n", fileInfo.Size()/(1024*1024))
 	}
-	
+
 	data, err := os.ReadFile(imgPath)
 	if err != nil {
 		return fmt.Errorf("Error reading image %s: %w", filepath.Base(imgPath), err)
 	}
-	
+
 	b64data := base64.StdEncoding.EncodeToString(data)
 	fmt.Print("\x1b[2J\x1b[H") // Clear screen + home
-	fmt.Printf("\x1b]1337;File=inline=1:%s\a", b64data)
+
+	// Construct options string based on m.CurrentImageOptions
+	opts := []string{"inline=1"}
+
+	// Add all options
+	if m.CurrentImageOptions.Width != "" {
+		opts = append(opts, fmt.Sprintf("width=%s", m.CurrentImageOptions.Width))
+	}
+
+	if m.CurrentImageOptions.Height != "" && m.CurrentImageOptions.Height != "auto" {
+		opts = append(opts, fmt.Sprintf("height=%s", m.CurrentImageOptions.Height))
+	}
+
+	if m.CurrentImageOptions.MaxWidth != "" && m.CurrentImageOptions.MaxWidth != "0" {
+		opts = append(opts, fmt.Sprintf("max-width=%s", m.CurrentImageOptions.MaxWidth))
+	}
+
+	if m.CurrentImageOptions.MaxHeight != "" && m.CurrentImageOptions.MaxHeight != "0" {
+		opts = append(opts, fmt.Sprintf("max-height=%s", m.CurrentImageOptions.MaxHeight))
+	}
+
+	if !m.CurrentImageOptions.PreserveAspectRatio {
+		opts = append(opts, "preserveaspectratio=0")
+	}
+
+	if m.CurrentImageOptions.Align != "" {
+		opts = append(opts, fmt.Sprintf("align=%s", m.CurrentImageOptions.Align))
+	}
+
+	if m.CurrentImageOptions.ZIndex > 0 {
+		opts = append(opts, fmt.Sprintf("z-index=%d", m.CurrentImageOptions.ZIndex))
+	}
+
+	if m.CurrentImageOptions.Persistent {
+		opts = append(opts, "persistent=1")
+	}
+
+	if m.CurrentImageOptions.Name != "" {
+		opts = append(opts, fmt.Sprintf("name=%s", m.CurrentImageOptions.Name))
+	}
+
+	// Add extended options
+	if m.CurrentImageOptions.BackgroundColor != "" {
+		opts = append(opts, fmt.Sprintf("background-color=%s", m.CurrentImageOptions.BackgroundColor))
+	}
+
+	if m.CurrentImageOptions.Rotation > 0 {
+		opts = append(opts, fmt.Sprintf("rotation=%d", m.CurrentImageOptions.Rotation))
+	}
+
+	if m.CurrentImageOptions.Quality > 0 && m.CurrentImageOptions.Quality <= 100 {
+		opts = append(opts, fmt.Sprintf("quality=%d", m.CurrentImageOptions.Quality))
+	}
+
+	if m.CurrentImageOptions.AnimationDuration > 0 {
+		opts = append(opts, fmt.Sprintf("animation-duration=%d", m.CurrentImageOptions.AnimationDuration))
+	}
+
+	// Construct and send the escape sequence
+	fmt.Printf("\x1b]1337;File=%s:%s\a", strings.Join(opts, ";"), b64data)
 	_ = os.Stdout.Sync()
 	return nil
 }
@@ -499,7 +598,7 @@ func IsTextFile(content []byte) bool {
 			return false
 		}
 	}
-	
+
 	// Check for non-printable characters (simple heuristic)
 	nonPrintable := 0
 	for _, b := range content {
@@ -507,7 +606,7 @@ func IsTextFile(content []byte) bool {
 			nonPrintable++
 		}
 	}
-	
+
 	// If more than 5% non-printable, probably binary
 	return float64(nonPrintable)/float64(len(content)) < 0.05
 }
@@ -536,7 +635,9 @@ func IsTextFileExt(filename string) bool {
 }
 
 // Init initializes the model for bubbletea
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
+	// Reset image options to defaults
+	m.CurrentImageOptions = DefaultImageOptions()
 	return textinput.Blink // Start the text input blinking
 }
 
@@ -546,30 +647,30 @@ func SaveState(state *PersistentState) error {
 	if err != nil {
 		return err
 	}
-	
+
 	configDir := filepath.Join(homeDir, ".config", "gf")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return err
 	}
-	
+
 	stateFile := filepath.Join(configDir, "state.json")
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(stateFile, data, 0644)
 }
 
 // LoadState loads the state from a file
 func LoadState() (PersistentState, error) {
 	var state PersistentState
-	
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return state, err
 	}
-	
+
 	stateFile := filepath.Join(homeDir, ".config", "gf", "state.json")
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
@@ -578,7 +679,7 @@ func LoadState() (PersistentState, error) {
 		}
 		return state, err
 	}
-	
+
 	err = json.Unmarshal(data, &state)
 	return state, err
 }

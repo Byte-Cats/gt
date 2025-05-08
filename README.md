@@ -21,12 +21,12 @@ Go Terminal
 *   **Color Support:** Handles 16-color, 256-color, and TrueColor (24-bit) escape sequences.
 *   **Text Attributes:** Supports Bold (via font variant), Underline, and Reverse Video.
 *   **Scrollback:** Basic scrollback buffer navigable via Mouse Wheel.
-*   **iTerm2 Inline Image Protocol:** Displays inline images using the iTerm2 protocol (see below).
+*   **Enhanced Inline Image Protocol:** Displays and manages inline images using an extended iTerm2-compatible protocol.
 *   **Wide Character Support:** Basic handling for wide characters.
 
-### Image Preview Support
+### Enhanced Image Support
 
-`gt` supports displaying inline images using the **iTerm2 Inline Image Protocol**.
+`gt` supports displaying and manipulating inline images using an **Extended iTerm2 Image Protocol**. This enhanced protocol offers powerful features like z-index layering, alignment control, and persistent images.
 
 To display an image, an application running inside `gt` needs to output a specific escape sequence to standard output:
 
@@ -38,20 +38,36 @@ Where:
 *   `ESC` is the escape character (`\x1b`).
 *   `ST` is the String Terminator, which can be BEL (`\a`, `\x07`) or `ESC \` (`\x1b\\`).
 *   `BASE64DATA` is the base64-encoded content of the image file.
-*   `[;options...]` are optional key-value pairs separated by semicolons. Supported options include:
-    *   `width=N`: Specify width in character cells (`N`), pixels (`Npx`), or percentage of terminal width (`N%`). `auto` uses native width.
-    *   `height=N`: Specify height similarly (cells, `Npx`, `N%`). `auto` uses native height.
-    *   `preserveAspectRatio=1|0`: Whether to maintain aspect ratio (default is 1/true).
+*   `[;options...]` are optional key-value pairs separated by semicolons. 
 
-**Example Script:**
+#### Basic Options:
+*   `width=N`: Specify width in character cells (`N`), pixels (`Npx`), or percentage of terminal width (`N%`). `auto` uses native width.
+*   `height=N`: Specify height similarly (cells, `Npx`, `N%`). `auto` uses native height.
+*   `preserveAspectRatio=1|0`: Whether to maintain aspect ratio (default is 1/true).
 
-A Python script is provided in `contrib/load_image.py` to display images:
+#### Advanced Options:
+*   `max-width=N`: Maximum width in pixels (`0` = unlimited).
+*   `max-height=N`: Maximum height in pixels (`0` = unlimited).
+*   `z-index=N`: Layering order, higher values appear on top (default is `0`).
+*   `align=left|center|right`: Horizontal image alignment (default is `left`).
+*   `name=ID`: Optional identifier for image manipulation.
+*   `persistent=1|0`: If `1`, image remains when cursor moves (default is `0`).
+
+**Example Scripts:**
+
+A simple Python script is provided in `contrib/load_image.py`:
 
 ```bash
 python contrib/load_image.py /path/to/your/image.png
 ```
 
-This script reads the image file, encodes it, and prints the necessary escape sequence.
+For advanced features, try the demo script:
+
+```bash
+python contrib/advanced_image_demo.py --image-dir /path/to/images/
+```
+
+For complete API documentation, see `docs/image_api.md`.
 
 ### Configuration
 

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -170,7 +171,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	var viewportCmd tea.Cmd
 	m.Viewport, viewportCmd = m.Viewport.Update(msg)
 	cmds = append(cmds, viewportCmd)
-	
+
 	if m.ShowPreview && m.PreviewViewport.Height > 0 {
 		var previewCmd tea.Cmd
 		m.PreviewViewport, previewCmd = m.PreviewViewport.Update(msg)
@@ -199,11 +200,11 @@ func handleWindowResize(m Model, msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 		m.Viewport.YPosition = headerHeight + statusHeight + filterHeight
 		m.Viewport.HighPerformanceRendering = false
 		m.FilterInput.Width = msg.Width - 4 // Adjust filter input width slightly less than full
-		
+
 		// Initialize preview viewport
 		m.PreviewViewport = viewport.New(msg.Width/2, msg.Height-verticalMarginHeight)
 		m.PreviewViewport.YPosition = headerHeight + statusHeight + filterHeight
-		
+
 		m.ApplyFilter() // Apply initial (empty) filter now that viewport is sized
 		m.Ready = true
 
@@ -213,12 +214,12 @@ func handleWindowResize(m Model, msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 			m.Viewport.Style = m.Styles.Base.Copy().
 				Width(msg.Width - borderSize).
 				Height(msg.Height - verticalMarginHeight - m.Styles.Base.GetVerticalBorderSize())
-			
+
 			m.PreviewViewport.Style = m.Styles.Base.Copy().
 				Width(msg.Width/2 - borderSize).
 				Height(msg.Height - verticalMarginHeight - m.Styles.Base.GetVerticalBorderSize())
 		}
-		
+
 		cmds = append(cmds, textinput.Blink)
 	} else {
 		// Update viewport and filter input size on resize
@@ -226,7 +227,7 @@ func handleWindowResize(m Model, msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 		m.Viewport.Height = msg.Height - verticalMarginHeight
 		m.Viewport.YPosition = headerHeight + statusHeight + filterHeight
 		m.FilterInput.Width = msg.Width - 4
-		
+
 		// Update preview viewport
 		previewWidth := msg.Width / 2
 		if !m.ShowPreview {
@@ -242,7 +243,7 @@ func handleWindowResize(m Model, msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 			m.Viewport.Style = m.Styles.Base.Copy().
 				Width(msg.Width - borderSize).
 				Height(msg.Height - verticalMarginHeight - m.Styles.Base.GetVerticalBorderSize())
-			
+
 			m.PreviewViewport.Style = m.Styles.Base.Copy().
 				Width(previewWidth - borderSize).
 				Height(msg.Height - verticalMarginHeight - m.Styles.Base.GetVerticalBorderSize())
@@ -252,13 +253,28 @@ func handleWindowResize(m Model, msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// handleImagePreviewMode handles keypresses in image preview mode
+// handleImagePreviewMode manages keyboard input when viewing an image
 func handleImagePreviewMode(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		keyStr := msg.String()
 		switch {
-		case keyStr == "k" || keyStr == "up":
+		// Exit image preview
+		case key.Matches(msg, m.Keymap.Quit), key.Matches(msg, m.Keymap.Back):
+			m.IsInImagePreviewMode = false
+			fmt.Print("\n") // Attempt to clear/scroll past the image
+			_ = os.Stdout.Sync()
+			m.Viewport.SetContent(m.RenderEntries())
+			return m, nil
+
+		// Navigate images
+		case key.Matches(msg, m.Keymap.ImgPrevNext), key.Matches(msg, m.Keymap.Down):
+			if len(m.ImageFilesInDir) > 0 {
+				m.CurrentPreviewImageIndex = (m.CurrentPreviewImageIndex + 1) % len(m.ImageFilesInDir)
+				if err := m.DisplayCurrentImageInGT(); err != nil {
+					m.Err = err
+				}
+			}
+		case key.Matches(msg, m.Keymap.ImgPrevPrev), key.Matches(msg, m.Keymap.Up):
 			if len(m.ImageFilesInDir) > 0 {
 				m.CurrentPreviewImageIndex--
 				if m.CurrentPreviewImageIndex < 0 {
@@ -268,50 +284,218 @@ func handleImagePreviewMode(m Model, msg tea.Msg) (Model, tea.Cmd) {
 					m.Err = err
 				}
 			}
-			return m, nil
-		case keyStr == "j" || keyStr == "down":
-			if len(m.ImageFilesInDir) > 0 {
-				m.CurrentPreviewImageIndex++
-				if m.CurrentPreviewImageIndex >= len(m.ImageFilesInDir) {
-					m.CurrentPreviewImageIndex = 0
-				}
-				if err := m.DisplayCurrentImageInGT(); err != nil {
-					m.Err = err
-				}
-			}
-			return m, nil
-		case key.Matches(msg, m.Keymap.Quit) || key.Matches(msg, m.Keymap.ClearFilter) || key.Matches(msg, m.Keymap.Back) || keyStr == "q" || keyStr == "escape":
-			m.IsInImagePreviewMode = false
-			fmt.Print("\x1b[2J\x1b[H") // Clear screen
-			_ = os.Stdout.Sync()
-			m.Err = nil
 
-			// If there was filter text, ensure the filter input is active again
-			if m.FilterInput.Value() != "" {
-				m.Filtering = true
-				m.FilterInput.Focus()
-				return m, textinput.Blink
-			} else {
-				m.Filtering = false
+		// --- Image Display Option Adjustments ---
+
+		case key.Matches(msg, m.Keymap.ImgPrevReset):
+			m.CurrentImageOptions = DefaultImageOptions()
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
 			}
-			m.Viewport.SetContent(m.RenderEntries())
-			return m, nil
+
+		case key.Matches(msg, m.Keymap.ImgPrevAspect):
+			m.CurrentImageOptions.PreserveAspectRatio = !m.CurrentImageOptions.PreserveAspectRatio
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevPersist):
+			m.CurrentImageOptions.Persistent = !m.CurrentImageOptions.Persistent
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevWidthMode):
+			m.CurrentImageOptions.AdjustMode = "width"
+			// If current width is auto or not set, give it a default when switching mode
+			if m.CurrentImageOptions.Width == "auto" || m.CurrentImageOptions.Width == "" {
+				m.CurrentImageOptions.Width = "90%"
+			}
+			m.CurrentImageOptions.Height = "auto" // Ensure height is auto when width is primary
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevHeightMode):
+			m.CurrentImageOptions.AdjustMode = "height"
+			// If current height is auto or not set, give it a default when switching mode
+			if m.CurrentImageOptions.Height == "auto" || m.CurrentImageOptions.Height == "" {
+				m.CurrentImageOptions.Height = "90%"
+			}
+			m.CurrentImageOptions.Width = "auto" // Ensure width is auto when height is primary
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevAlignL):
+			m.CurrentImageOptions.Align = "left"
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+		case key.Matches(msg, m.Keymap.ImgPrevAlignC):
+			m.CurrentImageOptions.Align = "center"
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+		case key.Matches(msg, m.Keymap.ImgPrevAlignR):
+			m.CurrentImageOptions.Align = "right"
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevZIndex):
+			m.CurrentImageOptions.ZIndex++ // Simple increment
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevSizeUp):
+			adjustImageDimension(&m.CurrentImageOptions, true, 5)
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+		case key.Matches(msg, m.Keymap.ImgPrevSizeDown):
+			adjustImageDimension(&m.CurrentImageOptions, false, 5)
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgPrevMaxHeight):
+			// Toggle between no max height and a default percentage (e.g., 80%)
+			// A more robust solution would get terminal height.
+			if m.CurrentImageOptions.MaxHeight == "0" || m.CurrentImageOptions.MaxHeight == "" {
+				m.CurrentImageOptions.MaxHeight = "80%"
+			} else {
+				m.CurrentImageOptions.MaxHeight = "0"
+			}
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
+
+		case key.Matches(msg, m.Keymap.ImgFitToWidth):
+			m.CurrentImageOptions.Width = "100%"
+			m.CurrentImageOptions.Height = "auto"
+			m.CurrentImageOptions.PreserveAspectRatio = true
+			if err := m.DisplayCurrentImageInGT(); err != nil {
+				m.Err = err
+			}
 		}
-		return m, nil
 	}
 	return m, nil
 }
 
-// handleFilteringMode handles keypresses when in filtering mode
+// adjustImageDimension is a helper to modify image size options
+// Ensure this function correctly uses the passed `opts *ImageDisplayOptions`
+func adjustImageDimension(opts *ImageDisplayOptions, increase bool, delta int) {
+	// Determine which dimension to adjust based on AdjustMode
+	targetDim := opts.AdjustMode
+	if targetDim == "" {
+		targetDim = "width" // Default to width if not set
+		opts.AdjustMode = "width"
+	}
+
+	currentValStr := ""
+	isPercent := false
+	valSuffix := "%" // Default to percent
+
+	if targetDim == "width" {
+		currentValStr = opts.Width
+	} else { // height
+		currentValStr = opts.Height
+	}
+
+	// Parse current value
+	if strings.HasSuffix(currentValStr, "%") {
+		isPercent = true
+		currentValStr = strings.TrimSuffix(currentValStr, "%")
+	} else if strings.HasSuffix(currentValStr, "px") {
+		isPercent = false
+		valSuffix = "px"
+		currentValStr = strings.TrimSuffix(currentValStr, "px")
+	} else if currentValStr == "auto" || currentValStr == "" {
+		// If auto or empty, start from a base percentage or pixel value
+		if targetDim == "width" { // Default to % for width
+			isPercent = true
+			currentValStr = "50"
+			valSuffix = "%"
+		} else { // Default to % for height as well, could be pixels
+			isPercent = true
+			currentValStr = "50"
+			valSuffix = "%"
+		}
+	} else {
+		// Try to parse as number, default to percent if no suffix
+		parsedNum, err := strconv.Atoi(currentValStr)
+		if err == nil {
+			currentValStr = strconv.Itoa(parsedNum) // Use the parsed number
+			isPercent = true                        // Assume percent if no suffix and parsable
+			valSuffix = "%"
+		} else {
+			// Fallback if unparseable and no recognized suffix
+			isPercent = true
+			currentValStr = "50"
+			valSuffix = "%"
+		}
+	}
+
+	currentVal, err := strconv.Atoi(currentValStr)
+	if err != nil {
+		// If parsing fails after all attempts, default to a sensible value
+		currentVal = 50
+		if isPercent {
+			valSuffix = "%"
+		} else {
+			valSuffix = "px"
+		}
+	}
+
+	deltaVal := delta
+	if !isPercent {
+		deltaVal = delta * 10 // For pixel adjustments, use a larger step, e.g., 50px if delta is 5
+	}
+
+	if increase {
+		currentVal += deltaVal
+	} else {
+		currentVal -= deltaVal
+	}
+
+	// Clamp values
+	if isPercent {
+		if currentVal > 100 {
+			currentVal = 100
+		}
+		if currentVal < 5 {
+			currentVal = 5
+		}
+	} else { // Pixels
+		if currentVal < 10 {
+			currentVal = 10
+		}
+		// No upper clamp for pixels for now, could be added
+	}
+
+	newValStr := strconv.Itoa(currentVal) + valSuffix
+
+	if targetDim == "width" {
+		opts.Width = newValStr
+		opts.Height = "auto"
+	} else { // height
+		opts.Height = newValStr
+		opts.Width = "auto"
+	}
+}
+
+// handleFilteringMode manages keyboard input when filter input is active
 func handleFilteringMode(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	
+
 	switch {
 	// Clear filter and exit filtering mode (ESC key)
 	case key.Matches(msg, m.Keymap.ClearFilter):
 		m.Filtering = false
 		m.FilterInput.Blur()
-		
+
 		// Only reset filter if it's a filter operation, not a rename or other operation
 		if strings.HasPrefix(m.FilterInput.Placeholder, "Filter") {
 			m.FilterInput.Reset() // Clears text
@@ -322,7 +506,7 @@ func handleFilteringMode(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 	case msg.Type == tea.KeyEnter:
 		m.Filtering = false
 		m.FilterInput.Blur()
-		
+
 		// Check if this is a filter or another operation
 		if strings.HasPrefix(m.FilterInput.Placeholder, "New file name:") {
 			ops := NewFileOperations(&m)
@@ -362,7 +546,7 @@ func handleFilteringMode(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		cmds = append(cmds, filterCmd)
 	}
-	
+
 	// Ensure viewport updates after filter actions
 	m.Viewport.SetContent(m.RenderEntries())
 	return m, tea.Batch(cmds...)
@@ -375,26 +559,26 @@ func handleBookmarksMode(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.ShowBookmarks = false
 		m.Viewport.SetContent(m.RenderEntries())
 		return m, nil
-		
+
 	case key.Matches(msg, m.Keymap.Up):
 		if m.Cursor > 0 {
 			m.Cursor--
 			m.Viewport.SetContent(m.RenderBookmarks())
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Down):
 		if m.Cursor < len(m.Bookmarks)-1 {
 			m.Cursor++
 			m.Viewport.SetContent(m.RenderBookmarks())
 		}
-		
+
 	case key.Matches(msg, m.Keymap.SelectEnter), key.Matches(msg, m.Keymap.SelectSpace):
 		if len(m.Bookmarks) > 0 && m.Cursor < len(m.Bookmarks) {
 			selectedPath := m.Bookmarks[m.Cursor]
 			m.ShowBookmarks = false
 			m.ReadDir(selectedPath)
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Delete):
 		if len(m.Bookmarks) > 0 && m.Cursor < len(m.Bookmarks) {
 			ops := NewFileOperations(&m)
@@ -408,31 +592,31 @@ func handleBookmarksMode(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.Viewport.SetContent(m.RenderBookmarks())
 		}
 	}
-	
+
 	return m, nil
 }
 
 // handleNavigationMode handles regular navigation mode
 func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry) (Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	
+
 	switch {
 	// Help screen
 	case key.Matches(msg, m.Keymap.Help):
 		m.ShowHelp = true
-		
+
 	// Start filtering
 	case key.Matches(msg, m.Keymap.StartFilter):
 		m.Filtering = true
 		m.FilterInput.Placeholder = "Filter..."
 		m.FilterInput.Focus()
 		cmds = append(cmds, textinput.Blink)
-		
+
 	// Toggle hidden files
 	case key.Matches(msg, m.Keymap.ToggleHidden):
 		m.ShowHidden = !m.ShowHidden
 		m.ReadDir(m.Cwd) // Re-read directory with new setting
-		
+
 	// Toggle preview pane
 	case key.Matches(msg, m.Keymap.TogglePreview):
 		m.ShowPreview = !m.ShowPreview
@@ -444,7 +628,7 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 				m.LoadFilePreview(filePath)
 			}
 		}
-		
+
 	// Bookmark operations
 	case key.Matches(msg, m.Keymap.AddBookmark):
 		ops := NewFileOperations(&m)
@@ -453,7 +637,7 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 		} else {
 			m.Err = fmt.Errorf("Bookmarked: %s", m.Cwd)
 		}
-		
+
 	case key.Matches(msg, m.Keymap.ShowBookmarks):
 		if len(m.Bookmarks) == 0 {
 			m.Err = fmt.Errorf("No bookmarks saved")
@@ -462,32 +646,32 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 			m.Cursor = 0 // Reset cursor for bookmark view
 			m.Viewport.SetContent(m.RenderBookmarks())
 		}
-		
+
 	// File operations
 	case key.Matches(msg, m.Keymap.Copy):
 		ops := NewFileOperations(&m)
 		if err := ops.CopyFile(); err != nil {
 			m.Err = err
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Cut):
 		ops := NewFileOperations(&m)
 		if err := ops.CutFile(); err != nil {
 			m.Err = err
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Paste):
 		ops := NewFileOperations(&m)
 		if err := ops.PasteFile(); err != nil {
 			m.Err = err
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Delete):
 		ops := NewFileOperations(&m)
 		if err := ops.DeleteFile(); err != nil {
 			m.Err = err
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Rename):
 		selectedEntry, err := getSelectedEntry(m)
 		if err != nil {
@@ -511,7 +695,7 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 				updatePreviewForCurrentSelection(m)
 			}
 		}
-		
+
 	case key.Matches(msg, m.Keymap.Down):
 		if m.Cursor < len(currentEntries)-1 {
 			m.Cursor++
@@ -520,28 +704,28 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 				updatePreviewForCurrentSelection(m)
 			}
 		}
-		
+
 	case key.Matches(msg, m.Keymap.PageUp):
 		m.Viewport.HalfViewUp()
 		m.Cursor = Max(0, m.Cursor-m.Viewport.Height/2)
 		if m.ShowPreview {
 			updatePreviewForCurrentSelection(m)
 		}
-		
+
 	case key.Matches(msg, m.Keymap.PageDown):
 		m.Viewport.HalfViewDown()
 		m.Cursor = Min(len(currentEntries)-1, m.Cursor+m.Viewport.Height/2)
 		if m.ShowPreview {
 			updatePreviewForCurrentSelection(m)
 		}
-		
+
 	case key.Matches(msg, m.Keymap.GoToTop):
 		m.Viewport.GotoTop()
 		m.Cursor = 0
 		if m.ShowPreview {
 			updatePreviewForCurrentSelection(m)
 		}
-		
+
 	case key.Matches(msg, m.Keymap.GoToBottom):
 		m.Viewport.GotoBottom()
 		m.Cursor = len(currentEntries) - 1
@@ -554,7 +738,7 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 		if len(currentEntries) == 0 || m.Cursor >= len(currentEntries) {
 			break // Nothing to select
 		}
-		
+
 		selectedEntry := currentEntries[m.Cursor]
 		absPath := filepath.Join(m.Cwd, selectedEntry.Name())
 
@@ -578,7 +762,7 @@ func handleNavigationMode(m Model, msg tea.KeyMsg, currentEntries []fs.DirEntry)
 			m.Err = fmt.Errorf("Already at root directory")
 		}
 	}
-	
+
 	m.Viewport.SetContent(m.RenderEntries())
 	return m, tea.Batch(cmds...)
 }
@@ -632,14 +816,14 @@ func updatePreviewForCurrentSelection(m Model) Model {
 		m.ShowPreview = false
 		return m
 	}
-	
+
 	if selectedEntry.IsDir() {
 		// For directories, show a simple message or directory info
 		m.PreviewContent = fmt.Sprintf("Directory: %s", selectedEntry.Name())
 		m.PreviewViewport.SetContent(m.PreviewContent)
 		return m
 	}
-	
+
 	// For files, try to show content preview
 	filePath := filepath.Join(m.Cwd, selectedEntry.Name())
 	m.LoadFilePreview(filePath)

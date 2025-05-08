@@ -121,6 +121,12 @@ type StoredImage struct {
 	WidthConstraint  string // e.g., "auto", "N", "Npx", "N%"
 	HeightConstraint string // e.g., "auto", "N", "Npx", "N%"
 	PreserveAspect   bool
+	MaxWidth         int    // Maximum width in pixels (0 = unlimited)
+	MaxHeight        int    // Maximum height in pixels (0 = unlimited)
+	ZIndex           int    // Z-index for layering (higher = in front)
+	Alignment        string // "left", "center", "right"
+	Name             string // Optional image identifier for reference/manipulation
+	Persistent       bool   // If true, persists after cursor moves
 }
 
 // Output represents the state of the terminal screen buffer.
@@ -939,6 +945,12 @@ func (o *Output) handleItermOsc(args string) {
 		heightConstraint := "auto"
 		preserveAspect := true // Default to true based on observation
 		isInline := false
+		maxWidth := 0          // 0 means unlimited
+		maxHeight := 0         // 0 means unlimited
+		zIndex := 0            // Default z-index
+		alignment := "left"    // Default alignment
+		name := ""             // Optional identifier
+		persistent := false    // Default is non-persistent
 
 		opts := strings.Split(optionsStr, ";")
 		for _, opt := range opts {
@@ -950,17 +962,39 @@ func (o *Output) handleItermOsc(args string) {
 					widthConstraint = value
 				case "height":
 					heightConstraint = value
+				case "preserveaspectratio":
+					if value == "0" {
+						preserveAspect = false
+					}
 				case "inline":
 					if value == "1" {
 						isInline = true
 					}
-				case "preserveaspectratio":
-					if value == "0" {
-						preserveAspect = false
-					} // Assume 1 or omitted means true
+				case "max-width", "maxwidth":
+					if i, err := strconv.Atoi(value); err == nil && i >= 0 {
+						maxWidth = i
+					}
+				case "max-height", "maxheight":
+					if i, err := strconv.Atoi(value); err == nil && i >= 0 {
+						maxHeight = i
+					}
+				case "z-index", "zindex":
+					if i, err := strconv.Atoi(value); err == nil {
+						zIndex = i
+					}
+				case "align", "alignment":
+					if value == "left" || value == "center" || value == "right" {
+						alignment = value
+					}
+				case "name", "id":
+					name = value
+				case "persistent":
+					if value == "1" || value == "true" {
+						persistent = true
+					}
+				default:
+					// Ignore unknown options
 				}
-			} else if opt == "inline=1" { // Handle case where SplitN doesn't work as expected
-				isInline = true
 			}
 		}
 
@@ -993,6 +1027,12 @@ func (o *Output) handleItermOsc(args string) {
 			WidthConstraint:  widthConstraint,
 			HeightConstraint: heightConstraint,
 			PreserveAspect:   preserveAspect,
+			MaxWidth:         maxWidth,
+			MaxHeight:        maxHeight,
+			ZIndex:           zIndex,
+			Alignment:        alignment,
+			Name:             name,
+			Persistent:       persistent,
 		}
 
 		// Mark cell as placeholder
@@ -1010,19 +1050,129 @@ func (o *Output) handleItermOsc(args string) {
 }
 
 // GetImage retrieves a stored image, its ID, and display constraints by its key.
-func (o *Output) GetImage(key ImageKey) (image.Image, int, string, string, bool) {
+func (o *Output) GetImage(key ImageKey) (image.Image, int, string, string, bool, int, int, int, string, string, bool) {
 	// Only attempt to retrieve images if we are looking at the live view.
 	// Images stored relative to live grid coordinates won't match when scrolled back.
 	if o.viewOffset != 0 {
-		return nil, 0, "", "", false
+		return nil, 0, "", "", false, 0, 0, 0, "", "", false
 	}
 
 	// Simple lookup for now using live grid coordinates.
 	storedImg, ok := o.images[key]
 	if ok {
-		return storedImg.Img, storedImg.ID, storedImg.WidthConstraint, storedImg.HeightConstraint, storedImg.PreserveAspect
+		return storedImg.Img, storedImg.ID, storedImg.WidthConstraint, storedImg.HeightConstraint, 
+		       storedImg.PreserveAspect, storedImg.MaxWidth, storedImg.MaxHeight, storedImg.ZIndex,
+		       storedImg.Alignment, storedImg.Name, storedImg.Persistent
 	}
-	return nil, 0, "", "", false
+	return nil, 0, "", "", false, 0, 0, 0, "", "", false
+}
+
+// GetImageByName retrieves an image by its name
+func (o *Output) GetImageByName(name string) (image.Image, ImageKey, bool) {
+	if name == "" {
+		return nil, ImageKey{}, false
+	}
+	
+	for key, img := range o.images {
+		if img.Name == name {
+			return img.Img, key, true
+		}
+	}
+	
+	return nil, ImageKey{}, false
+}
+
+// RemoveImage removes an image by its key and returns true if successful
+func (o *Output) RemoveImage(key ImageKey) bool {
+	_, exists := o.images[key]
+	if exists {
+		delete(o.images, key)
+		// Clear the image placeholder in the grid
+		if key.R >= 0 && key.R < o.rows && key.C >= 0 && key.C < o.cols {
+			o.grid[key.R][key.C].IsImagePlaceholder = false
+		}
+		return true
+	}
+	return false
+}
+
+// RemoveImageByName removes an image by its name and returns true if successful
+func (o *Output) RemoveImageByName(name string) bool {
+	if name == "" {
+		return false
+	}
+	
+	for key, img := range o.images {
+		if img.Name == name {
+			return o.RemoveImage(key)
+		}
+	}
+	return false
+}
+
+// MoveImage moves an image from one position to another
+func (o *Output) MoveImage(fromKey ImageKey, toRow, toCol int) bool {
+	img, exists := o.images[fromKey]
+	if !exists || toRow < 0 || toRow >= o.rows || toCol < 0 || toCol >= o.cols {
+		return false
+	}
+	
+	// Create new key for destination position
+	toKey := ImageKey{R: toRow, C: toCol}
+	
+	// Check if destination already has an image
+	if _, occupied := o.images[toKey]; occupied {
+		return false // Cannot move to occupied position
+	}
+	
+	// Remove from old position and update grid
+	delete(o.images, fromKey)
+	if fromKey.R >= 0 && fromKey.R < o.rows && fromKey.C >= 0 && fromKey.C < o.cols {
+		o.grid[fromKey.R][fromKey.C].IsImagePlaceholder = false
+	}
+	
+	// Add to new position and update grid
+	o.images[toKey] = img
+	o.grid[toKey.R][toKey.C].IsImagePlaceholder = true
+	
+	return true
+}
+
+// UpdateImageProperties updates properties of an existing image
+func (o *Output) UpdateImageProperties(key ImageKey, widthConstraint, heightConstraint string, 
+	preserveAspect bool, maxWidth, maxHeight, zIndex int, alignment string, persistent bool) bool {
+	
+	img, exists := o.images[key]
+	if !exists {
+		return false
+	}
+	
+	// Update properties
+	img.WidthConstraint = widthConstraint
+	img.HeightConstraint = heightConstraint
+	img.PreserveAspect = preserveAspect
+	img.MaxWidth = maxWidth
+	img.MaxHeight = maxHeight
+	img.ZIndex = zIndex
+	img.Alignment = alignment
+	img.Persistent = persistent
+	
+	// Store updated image
+	o.images[key] = img
+	return true
+}
+
+// ClearAllImages removes all images from the buffer
+func (o *Output) ClearAllImages() {
+	// Clear image placeholders in grid
+	for key := range o.images {
+		if key.R >= 0 && key.R < o.rows && key.C >= 0 && key.C < o.cols {
+			o.grid[key.R][key.C].IsImagePlaceholder = false
+		}
+	}
+	
+	// Clear the images map
+	o.images = make(map[ImageKey]StoredImage)
 }
 
 // newDefaultCell creates a cell with default attributes.

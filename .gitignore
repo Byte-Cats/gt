@@ -48,8 +48,6 @@ go.work
 
 # bin
 bin/
-gt
-gt
 gt_icon.icns
 build/gt.app/Contents/Info.plist
 build/gt.app/Contents/Resources/gt_icon.icns
